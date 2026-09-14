@@ -111,6 +111,45 @@ describe('@OpLogged decorator', () => {
     expect(logMock.finish).not.toHaveBeenCalled();
   });
 
+  it('locates dependencies through the logger/context resolver options', () => {
+    class Renamed {
+      constructor(
+        private readonly telemetry: Partial<OpLoggerService>,
+        private readonly tracing: Partial<OpContextService>,
+      ) {}
+
+      @OpLogged('renamed.op', {
+        logger: (self) => (self as Renamed).telemetry as OpLoggerService,
+        context: (self) => (self as Renamed).tracing as OpContextService,
+        userId: () => 'u-9',
+      })
+      run(): number {
+        return 7;
+      }
+    }
+
+    expect(new Renamed(logMock, ctxMock).run()).toBe(7);
+    expect(ctxMock.setUser).toHaveBeenCalledWith('u-9');
+    expect(logMock.start).toHaveBeenCalledWith('renamed.op', expect.anything());
+    expect(logMock.finish).toHaveBeenCalledWith('renamed.op', expect.anything());
+  });
+
+  it('runs the method unlogged when no logger can be resolved', () => {
+    class Bare {
+      @OpLogged('bare.op', {
+        logger: () => {
+          throw new Error('resolver exploded');
+        },
+      })
+      run(): string {
+        return 'still works';
+      }
+    }
+
+    expect(new Bare().run()).toBe('still works');
+    expect(logMock.start).not.toHaveBeenCalled();
+  });
+
   it('logs error for async failures and preserves rejection', async () => {
     const service = createService();
 

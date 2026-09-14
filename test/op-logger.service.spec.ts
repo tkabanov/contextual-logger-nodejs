@@ -149,6 +149,25 @@ describe('OpLoggerService', () => {
     });
   });
 
+  it('run() scopes a trace and user to the callback', async () => {
+    const result = await service.run(
+      'trace-job',
+      async () => {
+        service.start('job.process');
+        await waitForDispatch();
+        service.finish('job.process');
+        return 'done';
+      },
+      { userId: 'worker-1' },
+    );
+    await waitForDispatch();
+
+    expect(result).toBe('done');
+    expect(transport.events.map((e) => e.traceId)).toEqual(['trace-job', 'trace-job']);
+    expect(transport.events[0].user).toEqual({ id: 'worker-1' });
+    expect(context.get()).toBeUndefined();
+  });
+
   it('allows manual context seeding outside ALS scope', async () => {
     service.seed('trace-manual', { userId: 'user-seeded' });
     service.point('info', 'manual.point', { msg: 'manual' });

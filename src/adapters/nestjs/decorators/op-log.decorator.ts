@@ -11,6 +11,16 @@ export type ErrorFn = (err: unknown) => Partial<LogEvent> | undefined;
 export type OpLogOptions<A extends unknown[] = unknown[], R = unknown> = {
   /** Logical module name to stamp on logs. */
   module?: string;
+  /**
+   * Where to find the `OpLoggerService` on the decorated instance.
+   * Defaults to `instance.log`. Pass a function when the field has another name.
+   */
+  logger?: (instance: object) => OpLoggerService | undefined;
+  /**
+   * Where to find the `OpContextService` on the decorated instance (used to bind
+   * the user id). Defaults to `instance.opCtx`.
+   */
+  context?: (instance: object) => OpContextService | undefined;
   /** Position of an argument that carries `{ id?: string }`. */
   userParamIndex?: number;
   /** Explicit user id resolver. Has priority over `userParamIndex`. */
@@ -23,11 +33,18 @@ export type OpLogOptions<A extends unknown[] = unknown[], R = unknown> = {
   onError?: ErrorFn;
 };
 
-// Instances decorated with @OpLogged are expected to expose these optional deps.
+/**
+ * Default field names `@OpLogged` looks up on the decorated instance. Override
+ * per decorator with the `logger` / `context` options when your service names
+ * them differently.
+ */
 export type WithOpLogging = Partial<{
   log: OpLoggerService;
   opCtx: OpContextService;
 }>;
+
+const defaultLogger = (instance: object): OpLoggerService | undefined => (instance as WithOpLogging).log;
+const defaultContext = (instance: object): OpContextService | undefined => (instance as WithOpLogging).opCtx;
 
 /**
  * Wraps a method with operation logging: start → (point|none) → finish|error.
@@ -37,7 +54,16 @@ export function OpLogged<A extends unknown[], R>(
   event: string,
   opts: OpLogOptions<A, R> = {},
 ): MethodDecorator {
-  const { module: moduleName, userParamIndex, userId: userIdFn, extra, onSuccess, onError } = opts;
+  const {
+    module: moduleName,
+    userParamIndex,
+    userId: userIdFn,
+    extra,
+    onSuccess,
+    onError,
+    logger: resolveLogger = defaultLogger,
+    context: resolveContext = defaultContext,
+  } = opts;
 
   const decorator: MethodDecorator = (_target, _propertyKey, descriptor) => {
     if (!descriptor) return;
@@ -45,7 +71,11 @@ export function OpLogged<A extends unknown[], R>(
     const original = typed.value;
     if (!original) return;
 
-    typed.value = function (this: WithOpLogging, ...args: A): MaybePromise<R> {
+    typed.value = function (this: object, ...args: A): MaybePromise<R> {
+      // Missing dependencies never break the business call: the method simply runs unlogged.
+      const log = safeResolve(resolveLogger, this);
+      const opCtx = safeResolve(resolveContext, this);
+
       // Resolve user id and attach to ALS context if available.
       try {
         const uid =
@@ -53,7 +83,7 @@ export function OpLogged<A extends unknown[], R>(
           (typeof userParamIndex === 'number'
             ? (args[userParamIndex] as { id?: string } | undefined)?.id
             : undefined);
-        if (uid && this.opCtx?.setUser) this.opCtx.setUser(uid);
+        if (uid) opCtx?.setUser(uid);
       } catch {
         // Never fail a business call due to logging side-effects.
       }
@@ -61,7 +91,7 @@ export function OpLogged<A extends unknown[], R>(
       const base: Partial<LogEvent> = { module: moduleName, extra: extra?.(args) };
 
       // Start operation (pushes opId into ALS).
-      this.log?.start?.(event, base);
+      log?.start(event, base);
 
       // Call the original method.
       let result: MaybePromise<R>;
@@ -70,7 +100,7 @@ export function OpLogged<A extends unknown[], R>(
         result = original.apply(this, args);
       } catch (err) {
         const errFields = onError?.(err) ?? {};
-        this.log?.error?.(event, err, { ...base, ...errFields });
+        log?.error(event, err, { ...base, ...errFields });
         throw err;
       }
 
@@ -79,12 +109,12 @@ export function OpLogged<A extends unknown[], R>(
         return result.then(
           (res) => {
             const successFields = onSuccess?.(res) ?? {};
-            this.log?.finish?.(event, { ...base, ...successFields });
+            log?.finish(event, { ...base, ...successFields });
             return res;
           },
           (err) => {
             const errFields = onError?.(err) ?? {};
-            this.log?.error?.(event, err, { ...base, ...errFields });
+            log?.error(event, err, { ...base, ...errFields });
             throw err;
           },
         );
@@ -92,10 +122,18 @@ export function OpLogged<A extends unknown[], R>(
 
       // Sync path.
       const successFields = onSuccess?.(result) ?? {};
-      this.log?.finish?.(event, { ...base, ...successFields });
+      log?.finish(event, { ...base, ...successFields });
       return result;
     } as (...args: A) => MaybePromise<R>;
   };
 
   return decorator;
+}
+
+function safeResolve<T>(resolve: (instance: object) => T | undefined, instance: object): T | undefined {
+  try {
+    return resolve(instance);
+  } catch {
+    return undefined;
+  }
 }

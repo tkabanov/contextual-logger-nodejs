@@ -320,7 +320,17 @@ Behind the scenes `@OpLogged` issues:
 - a `*.finish` event with automatically calculated `durMs` on success
 - a `*.error` event that normalises thrown exceptions and keeps the trace open for upstream handlers
 
-Because the decorator relies on the AsyncLocalStorage context, ensure the service has `OpLoggerService` injected and that you have registered `LoggerModule.forRoot(...)` (and, for HTTP scenarios, the `HttpContextInterceptor`). Without those bindings the decorator cannot attach to the request scope and events will fall back to best-effort, context-free logging.
+The decorator reads its dependencies from the decorated instance: by default `this.log` (an `OpLoggerService`) and `this.opCtx` (an `OpContextService`, only needed for `userId`/`userParamIndex`). If your service names them differently, point the decorator at them:
+
+```ts
+@OpLogged('payments.charge', {
+  module: 'Payments',
+  logger: (self) => (self as PaymentService).telemetry,
+  context: (self) => (self as PaymentService).tracing,
+})
+```
+
+When no logger can be resolved the method runs unlogged; logging never breaks a business call. Register `LoggerModule.forRoot(...)` and, for HTTP scenarios, `HttpContextMiddleware`/`HttpContextInterceptor` so the decorator's events land in the request's trace.
 
 ### Examples
 
@@ -346,7 +356,39 @@ npx ts-node --project tsconfig.test.json examples/http-interceptor.ts
 
 When omitted, the module registers a default `ConsoleTransport` (warn+ to `stderr`). Pass an empty array to disable all transports.
 
-Exports: `OpLoggerService`, `OpContextService`, `CoreLoggerService`. The module also aliases `Logger` and the `'LoggerService'` token to `OpLoggerService` so existing Nest code can inject the standard logger contract.
+### `LoggerModule.forRootAsync(options)`
+
+Resolve the options from other providers, e.g. tokens and DSNs from `ConfigService`:
+
+```ts
+LoggerModule.forRootAsync({
+  imports: [ConfigModule],
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    transports: [
+      new ConsoleTransport({ minLevel: config.get('LOG_LEVEL', 'info') }),
+      new LogtailTransport(config.getOrThrow('LOGTAIL_TOKEN'), config.getOrThrow('LOGTAIL_HOST')),
+    ],
+    processors: [new SanitizeProcessor()],
+  }),
+});
+```
+
+`useFactory` may be async. `extraProviders` adds providers visible to the factory.
+
+### Injection tokens
+
+Exported from the package so you can inject the resolved configuration:
+
+| Token                  | Value                                                       |
+| ---------------------- | ----------------------------------------------------------- |
+| `LOGGER_OPTIONS`       | The resolved `LoggerModuleOptions`.                         |
+| `LOGGER_TRANSPORTS`    | `LoggerTransport[]` in use (defaults applied).              |
+| `LOGGER_PROCESSORS`    | `LoggerProcessor[]` in use.                                 |
+| `LOGGER_ERROR_HANDLER` | `onTransportError` or `undefined`.                          |
+| `LOGGER_SERVICE_ALIAS` | The string `'LoggerService'`, aliased to `OpLoggerService`. |
+
+Exports: `OpLoggerService`, `OpContextService`, `CoreLoggerService`, `HttpContextMiddleware` and the tokens above. The module also aliases `Logger` and the `'LoggerService'` token to `OpLoggerService` so existing Nest code can inject the standard logger contract.
 
 Use the framework-agnostic `OpContext` class from `@contextual-logger/nodejs/core` when wiring the logger in plain Node.js services.
 
@@ -357,17 +399,20 @@ Use the framework-agnostic `OpContext` class from `@contextual-logger/nodejs/cor
 - `point(level, event, fields)` – emit standalone measurement/annotation.
 - `error(event, err, fields)` – normalise errors, capture stacks and orphan operations. Any NestJS `HttpException` (400, 403, 404, ...) is captured with `err.status` and `err.response`.
 - Legacy helpers (`log`, `warn`, `debug`, `verbose`, `fatal`) remain for compatibility. `error` accepts both the structured form `error(event, err, fields?)` and Nest's `error(message, stack?, context?)`: a call is treated as structured when the second argument is not a string.
-- `seed(traceId, { userId })` — bind a trace to the current async execution (uses `enterWith`). Call it at the start of an isolated task such as a job or message handler, never from a shared context like application bootstrap, otherwise the store sticks to every later async task. Prefer `OpContextService.run`.
+- `run(traceId, fn, { userId })` — run `fn` inside a fresh trace scope (jobs, queue consumers, CLI commands). The scope ends with `fn`.
+- `seed(traceId, { userId })` — **deprecated**, use `run`. It relies on `enterWith`, which never exits; called from a shared context such as application bootstrap it leaks the store into every later async task.
 - `setUser(userId)` — update the bound user id for the current trace.
 
 ### `OpContext` / `OpContextService`
 
-- `OpContext` (core) exposes `run(traceId, fn)`, `runWith(store, fn)`, `enter(store)`, `beginOp(opId?)`, `endOp()`, `setUser(id)` for AsyncLocalStorage management. Prefer `run`/`runWith`, which scope the store to `fn`; `enter` is unscoped and leaks into all subsequent async work.
+- `OpContext` (core) exposes `run(traceId, fn, { userId })`, `runWith(store, fn)`, `beginOp(opId?, event?)`, `endOp()`, `setUser(id)` for AsyncLocalStorage management. `enter(store)` is **deprecated**: it is unscoped and leaks into all subsequent async work.
 - `OpContextService` (Nest) extends `OpContext` and is registered as an injectable for request-scoped scenarios.
 
 ### `CoreLoggerService`
 
 Low-level engine that fans out `LogEvent` objects to transports. Useful when you need structured logging outside of operation lifecycle (e.g. infrastructure code). It has no framework dependencies; call `close()` on shutdown to flush and dispose transports. Inside NestJS the module registers `NestCoreLoggerService` under the same token, which calls `close()` from `onModuleDestroy`.
+
+`debug/info/warn/error/fatal(msg, fields?)` and `log(level, msg, fields?)` accept any subset of `LogEvent` fields (`LogFields`); `traceId` defaults to an empty string and `event` to the level name when omitted. `child(moduleName)` returns a `ChildLogger` with the same methods that stamps `module` on every event.
 
 ### Transports & Processors
 

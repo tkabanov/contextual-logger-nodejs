@@ -3,6 +3,7 @@ export * from './decorators/op-log.decorator';
 export * from './http-context.interceptor';
 export * from './http-context.middleware';
 export * from './logger.module';
+export * from './logger.tokens';
 export * from './op-context.service';
 export * from './op-logger.service';
 export * from './trace-id.utils';

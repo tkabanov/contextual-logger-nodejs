@@ -108,6 +108,22 @@ describe('CoreLoggerService', () => {
     expect(transport.handledByLevel.info[0]?.msg).toBe('custom');
   });
 
+  it('level helpers accept partial fields and default traceId/event', async () => {
+    const transport = new RecordingTransport();
+    const logger = new CoreLoggerService([transport]);
+
+    logger.info('plain');
+    logger.warn('with module', { module: 'Infra', extra: { a: 1 } });
+    await waitForDispatch();
+
+    expect(transport.events[0]).toEqual(
+      expect.objectContaining({ level: 'info', msg: 'plain', traceId: '', event: 'info' }),
+    );
+    expect(transport.events[1]).toEqual(
+      expect.objectContaining({ level: 'warn', module: 'Infra', event: 'warn', extra: { a: 1 } }),
+    );
+  });
+
   it('provides child loggers that stamp module name', async () => {
     const transport = new RecordingTransport();
     const logger = new CoreLoggerService([transport]);

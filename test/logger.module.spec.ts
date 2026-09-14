@@ -1,19 +1,26 @@
+import { Injectable, Module } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 
 import {
   ConsoleTransport,
   CoreLoggerService,
   type LogEvent,
+  LOGGER_ERROR_HANDLER,
+  LOGGER_OPTIONS,
+  LOGGER_PROCESSORS,
+  LOGGER_TRANSPORTS,
   LoggerModule,
+  type LoggerModuleOptions,
   type LoggerProcessor,
   type LoggerTransport,
+  OpLoggerService,
 } from '../src';
 
 const getTransports = (moduleRef: TestingModule): LoggerTransport[] =>
-  moduleRef.get<LoggerTransport[]>('LOGGER_TRANSPORTS');
+  moduleRef.get<LoggerTransport[]>(LOGGER_TRANSPORTS);
 
 const getProcessors = (moduleRef: TestingModule): LoggerProcessor[] =>
-  moduleRef.get<LoggerProcessor[]>('LOGGER_PROCESSORS');
+  moduleRef.get<LoggerProcessor[]>(LOGGER_PROCESSORS);
 
 describe('LoggerModule', () => {
   it('provides default console transport and empty processors when options are omitted', async () => {
@@ -73,7 +80,7 @@ describe('LoggerModule', () => {
 
     const core = moduleRef.get(CoreLoggerService);
     const handler = moduleRef.get<((t: LoggerTransport, err: unknown) => void) | undefined>(
-      'LOGGER_ERROR_HANDLER',
+      LOGGER_ERROR_HANDLER,
     );
     expect(handler).toBe(onTransportError);
 
@@ -94,6 +101,44 @@ describe('LoggerModule', () => {
       }),
     );
     expect(onTransportError).toHaveBeenCalledWith(failingTransport, expect.any(Error));
+
+    await moduleRef.close();
+  });
+
+  it('resolves options asynchronously from injected providers (forRootAsync)', async () => {
+    @Injectable()
+    class FakeConfig {
+      get(key: string): string {
+        return key === 'LOG_LEVEL' ? 'debug' : '';
+      }
+    }
+    @Module({ providers: [FakeConfig], exports: [FakeConfig] })
+    class FakeConfigModule {}
+
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        LoggerModule.forRootAsync({
+          imports: [FakeConfigModule],
+          inject: [FakeConfig],
+          useFactory: async (config: FakeConfig): Promise<LoggerModuleOptions> => {
+            await Promise.resolve();
+            return {
+              transports: [
+                new ConsoleTransport({ minLevel: config.get('LOG_LEVEL') as 'debug', name: 'from-config' }),
+              ],
+            };
+          },
+        }),
+      ],
+    }).compile();
+
+    const options = moduleRef.get<LoggerModuleOptions>(LOGGER_OPTIONS);
+    expect(options.transports?.[0]?.name).toBe('from-config');
+    const transports = getTransports(moduleRef);
+    expect(transports[0]?.minLevel).toBe('debug');
+    expect(getProcessors(moduleRef)).toEqual([]);
+    expect(moduleRef.get(OpLoggerService)).toBeInstanceOf(OpLoggerService);
+    expect(moduleRef.get(CoreLoggerService)).toBeInstanceOf(CoreLoggerService);
 
     await moduleRef.close();
   });

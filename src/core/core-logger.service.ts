@@ -5,7 +5,19 @@ import type { LoggerTransport } from './transports/transport.interface';
 
 export type LoggerTransportErrorHandler = (transport: LoggerTransport, error: unknown) => void;
 
-type BaseFields = Omit<LogEvent, 'level' | 'msg' | 'time'>;
+/** Everything a caller may attach to a log call; `level`, `msg` and `time` are set by the logger. */
+export type LogFields = Partial<Omit<LogEvent, 'level' | 'msg' | 'time'>>;
+
+/** Logger bound to a module name; returned by `CoreLoggerService.child()`. */
+export interface ChildLogger {
+  emit: (event: LogEvent, consoleMsg?: string) => void;
+  log: (level: LogLevel, msg: string, fields?: LogFields) => void;
+  debug: (msg: string, fields?: LogFields) => void;
+  info: (msg: string, fields?: LogFields) => void;
+  warn: (msg: string, fields?: LogFields) => void;
+  error: (msg: string, fields?: LogFields) => void;
+  fatal: (msg: string, fields?: LogFields) => void;
+}
 
 /**
  * Core logging engine: processes and fan-outs events.
@@ -26,47 +38,51 @@ export class CoreLoggerService {
     void this.fanOut({ ...next, msg: next.msg ?? consoleMsg });
   }
 
-  log(level: LogLevel, msg: string, fields: Partial<BaseFields> = {}): void {
-    this.emit({ ...fields, level, msg, time: new Date().toISOString() } as LogEvent);
+  /**
+   * Emit a free-form event. `traceId` and `event` are optional here: outside an
+   * operation scope they default to an empty trace and the level name, so
+   * infrastructure code can log without building a full `LogEvent`.
+   */
+  log(level: LogLevel, msg: string, fields: LogFields = {}): void {
+    this.emit({
+      ...fields,
+      traceId: fields.traceId ?? '',
+      event: fields.event ?? level,
+      level,
+      msg,
+      time: new Date().toISOString(),
+    });
   }
 
-  debug(msg: string, f?: Omit<LogEvent, 'level' | 'msg' | 'time'>) {
-    this.log('debug', msg, f);
+  debug(msg: string, fields?: LogFields): void {
+    this.log('debug', msg, fields);
   }
-  info(msg: string, f?: Omit<LogEvent, 'level' | 'msg' | 'time'>) {
-    this.log('info', msg, f);
+  info(msg: string, fields?: LogFields): void {
+    this.log('info', msg, fields);
   }
-  warn(msg: string, f?: Omit<LogEvent, 'level' | 'msg' | 'time'>) {
-    this.log('warn', msg, f);
+  warn(msg: string, fields?: LogFields): void {
+    this.log('warn', msg, fields);
   }
-  error(msg: string, f?: Omit<LogEvent, 'level' | 'msg' | 'time'>) {
-    this.log('error', msg, f);
+  error(msg: string, fields?: LogFields): void {
+    this.log('error', msg, fields);
   }
-  fatal(msg: string, f?: Omit<LogEvent, 'level' | 'msg' | 'time'>) {
-    this.log('fatal', msg, f);
+  fatal(msg: string, fields?: LogFields): void {
+    this.log('fatal', msg, fields);
   }
 
-  child(moduleName: string): {
-    emit: (e: LogEvent, c?: string) => void;
-    log: (lvl: LogLevel, msg: string, f?: Partial<BaseFields>) => void;
-    debug: (msg: string, f?: Partial<BaseFields>) => void;
-    info: (msg: string, f?: Partial<BaseFields>) => void;
-    warn: (msg: string, f?: Partial<BaseFields>) => void;
-    error: (msg: string, f?: Partial<BaseFields>) => void;
-    fatal: (msg: string, f?: Partial<BaseFields>) => void;
-  } {
-    const emit = (e: LogEvent, c?: string) => this.emit({ ...e, module: e.module ?? moduleName }, c);
+  child(moduleName: string): ChildLogger {
+    const log = (level: LogLevel, msg: string, fields: LogFields = {}) =>
+      this.log(level, msg, { ...fields, module: fields.module ?? moduleName });
 
-    const log = (lvl: LogLevel, msg: string, f: Partial<BaseFields> = {}) =>
-      this.log(lvl, msg, { ...f, module: moduleName });
-
-    const debug = (msg: string, f: Partial<BaseFields> = {}) => log('debug', msg, f);
-    const info = (msg: string, f: Partial<BaseFields> = {}) => log('info', msg, f);
-    const warn = (msg: string, f: Partial<BaseFields> = {}) => log('warn', msg, f);
-    const error = (msg: string, f: Partial<BaseFields> = {}) => log('error', msg, f);
-    const fatal = (msg: string, f: Partial<BaseFields> = {}) => log('fatal', msg, f);
-
-    return { emit, log, debug, info, warn, error, fatal };
+    return {
+      emit: (event, consoleMsg) => this.emit({ ...event, module: event.module ?? moduleName }, consoleMsg),
+      log,
+      debug: (msg, fields) => log('debug', msg, fields),
+      info: (msg, fields) => log('info', msg, fields),
+      warn: (msg, fields) => log('warn', msg, fields),
+      error: (msg, fields) => log('error', msg, fields),
+      fatal: (msg, fields) => log('fatal', msg, fields),
+    };
   }
 
   /**

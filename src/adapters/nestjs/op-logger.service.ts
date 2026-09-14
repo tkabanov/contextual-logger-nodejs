@@ -14,9 +14,20 @@ export class OpLoggerService implements LoggerService {
   ) {}
 
   /**
-   * Explicitly bind a trace to the current async execution (cron jobs, consumers).
-   * Uses `enterWith`, so call it at the start of an isolated task, never from a
-   * shared context such as application bootstrap. Prefer `OpContextService.run`.
+   * Run `fn` inside a fresh trace scope (cron jobs, queue consumers, CLI commands).
+   * The scope ends with `fn`, so nothing leaks into other tasks.
+   */
+  run<T>(traceId: string, fn: () => T, options: { userId?: string } = {}): T {
+    return this.ctx.run(traceId, fn, options);
+  }
+
+  /**
+   * Bind a trace to the current async execution without a callback.
+   *
+   * @deprecated Use `run(traceId, fn, { userId })`. `seed` relies on
+   * `AsyncLocalStorage.enterWith`, which never exits: called from a shared
+   * context such as application bootstrap it leaks the store into every later
+   * async task, including unrelated requests. Will be removed in the next major.
    */
   seed(traceId: string, options: { userId?: string } = {}): void {
     const store = this.ctx.create(traceId, options.userId);
