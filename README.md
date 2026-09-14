@@ -350,7 +350,11 @@ LoggerModule.forRootAsync({
   useFactory: (config: ConfigService) => ({
     transports: [
       new ConsoleTransport({ minLevel: config.get('LOG_LEVEL', 'info') }),
-      new LogtailTransport(config.getOrThrow('LOGTAIL_TOKEN'), config.getOrThrow('LOGTAIL_HOST')),
+      new LogtailTransport({
+        sourceToken: config.getOrThrow('LOGTAIL_TOKEN'),
+        endpoint: config.getOrThrow('LOGTAIL_HOST'),
+        minLevel: 'info',
+      }),
     ],
     processors: [new SanitizeProcessor()],
   }),
@@ -377,6 +381,8 @@ Use the framework-agnostic `OpContext` class from `@contextual-logger/nodejs/cor
 
 ### `OpLoggerService`
 
+All four methods take `fields: OpFields`, i.e. any subset of `module`, `code`, `msg`, `durMs`, `http`, `db`, `err`, `extra`. Level, time, trace and op ids, `kind` and `user` are filled in by the logger from the current context.
+
 - `start(event, fields)` – begin an operation and push a new `opId` onto the context stack.
 - `finish(event, fields)` – mark completion, automatically computing `durMs`. Operations close LIFO; finishing an event other than the innermost open one still closes the innermost op but stamps `extra.opMismatch` with the event that was actually closed, so unbalanced pairs show up in the logs.
 - `point(level, event, fields)` – emit standalone measurement/annotation.
@@ -400,9 +406,19 @@ Low-level engine that fans out `LogEvent` objects to transports. Useful when you
 ### Transports & Processors
 
 - `ConsoleTransport` – configurable stream & minimum level (defaults to warn → `stderr`). Calls `flush()` and `dispose()` even though they are no-ops by default so you can extend the transport safely.
-- `LogtailTransport` (`@contextual-logger/nodejs/transports/logtail`) – forwards events to Logtail; token and host required, needs `@logtail/node`.
+- `LogtailTransport` (`@contextual-logger/nodejs/transports/logtail`) – forwards events to Logtail; `{ sourceToken, endpoint, minLevel?, name? }`, needs `@logtail/node`.
 - `SentryTransport` (`@contextual-logger/nodejs/transports/sentry`) – forwards `error`+ events to Sentry; needs `@sentry/node`, see below.
-- `SanitizeProcessor` – deep-clones events and redacts known sensitive keys (`password`, `token`, etc.). `Error` values keep name, message, stack, cause and own fields; `Map` becomes an object (keys redacted too), `Set` an array, buffers a `[Buffer N bytes]` placeholder.
+- `SanitizeProcessor` – deep-clones events, redacts values under sensitive keys (`password`, `token`, `authorization`, `apiKey`, `cookie`, `ssn`, `creditCard`, ... see `DEFAULT_SENSITIVE_KEYS`; matching ignores case and separators) and sensitive substrings inside strings (`Bearer <token>`, JWTs). `Error` values keep name, message, stack, cause and own fields; `Map` becomes an object (keys redacted too), `Set` an array, buffers a `[Buffer N bytes]` placeholder.
+
+  ```ts
+  new SanitizeProcessor({
+    keys: ['internalNote', 'x-signature'], // merged into the defaults (extendDefaults: false to replace them)
+    valuePatterns: [...DEFAULT_SENSITIVE_VALUE_PATTERNS, /\b\d{16}\b/g], // [] disables value redaction
+    replacement: '***',
+  });
+  ```
+
+- `safeStringify(value)` – the serialiser `ConsoleTransport` uses: never throws, marks cycles as `[Circular]`, stringifies `bigint`, keeps `Error` fields and flattens `Map`/`Set`. Use it in custom transports instead of `JSON.stringify`.
 
 ### Optional Transports
 
@@ -416,7 +432,7 @@ Sentry.init({ dsn: process.env.SENTRY_DSN }); // the transport never initialises
 
 LoggerModule.forRoot({
   transports: [
-    new LogtailTransport(process.env.LOGTAIL_TOKEN!, process.env.LOGTAIL_HOST!),
+    new LogtailTransport({ sourceToken: process.env.LOGTAIL_TOKEN!, endpoint: process.env.LOGTAIL_HOST! }),
     new SentryTransport({ minLevel: 'error' }),
   ],
 });
@@ -478,7 +494,7 @@ Wrap `log()` in retries/backoff or queueing when integrating with unstable sinks
 Common scripts:
 
 - `npm run build` – compile TypeScript to `dist/`.
-- `npm run test` – run the Jest suite.
+- `npm run test` – run the Jest suite, including an end-to-end test that boots a real NestJS application (`test/nest.e2e.spec.ts`) and checks trace propagation through middleware, guard, interceptor, `@OpLogged` and the service.
 - `npm run lint` / `npm run format` – quality gates (`src`, `test` and `examples`).
 - `npm run typecheck` – type-checks the library, the tests and the examples.
 

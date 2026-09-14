@@ -3,8 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { HttpException, Injectable, type LoggerService } from '@nestjs/common';
 
 import { CoreLoggerService } from '../../core/core-logger.service';
-import { LogEvent } from '../../core/log.types';
+import type { LogEvent, LogLevel, OpFields } from '../../core/log.types';
 import { OpContextService } from './op-context.service';
+
+type OpMeta = { opId?: string; parentOpId?: string; extra?: Record<string, unknown> };
 
 @Injectable()
 export class OpLoggerService implements LoggerService {
@@ -38,114 +40,53 @@ export class OpLoggerService implements LoggerService {
     this.ctx.setUser(id);
   }
 
-  start(event: string, fields: Partial<LogEvent> = {}): void {
-    const traceId = this.ensureTraceId();
+  start(event: string, fields: OpFields = {}): void {
     const opId = this.ctx.beginOp(undefined, event);
-    const context = this.ctx.get();
-    const ev: LogEvent = {
-      level: 'info',
-      time: now(),
-      traceId,
-      opId,
-      parentOpId: this.ctx.parentOp(),
-      kind: 'start',
-      event,
-      module: fields.module,
-      user: context?.user,
-      http: fields.http,
-      db: fields.db,
-      extra: fields.extra,
-      msg: fields.msg,
-    };
-    this.core.emit(ev, ev.msg);
+    this.core.emit(this.build('info', 'start', event, fields, { opId, parentOpId: this.ctx.parentOp() }));
   }
 
-  finish(event: string, fields: Partial<LogEvent> = {}): void {
-    const traceId = this.ensureTraceId();
+  finish(event: string, fields: OpFields = {}): void {
     // Read the parent while the finishing op is still on the stack: after endOp()
     // parentOp() would point at the grandparent.
     const parentOpId = this.ctx.parentOp();
     const ended = this.ctx.endOp();
-    const context = this.ctx.get();
 
     // Ops close LIFO. If the caller finishes an event other than the innermost
     // open one, flag it so unbalanced start/finish pairs are visible in the logs.
     const mismatch = ended.event !== undefined && ended.event !== event ? { opMismatch: ended.event } : {};
+    const durMs = fields.durMs ?? (ended.startedAt ? Date.now() - ended.startedAt : undefined);
 
-    const ev: LogEvent = {
-      level: 'info',
-      time: now(),
-      traceId,
-      opId: ended.opId,
-      parentOpId,
-      kind: 'finish',
-      event,
-      durMs: ended.startedAt ? Date.now() - ended.startedAt : undefined,
-      module: fields.module,
-      user: context?.user,
-      http: fields.http,
-      db: fields.db,
-      extra: { orphanOp: !ended.opId, ...mismatch, ...(fields.extra ?? {}) },
-      msg: fields.msg,
-    };
-    this.core.emit(ev, ev.msg);
+    this.core.emit(
+      this.build(
+        'info',
+        'finish',
+        event,
+        { ...fields, durMs },
+        { opId: ended.opId, parentOpId, extra: { orphanOp: !ended.opId, ...mismatch } },
+      ),
+    );
   }
 
-  point(level: LogEvent['level'], event: string, fields: Partial<LogEvent> = {}): void {
-    const traceId = this.ensureTraceId();
-    const current = this.ctx.currentOp();
-    const context = this.ctx.get();
-    const ev: LogEvent = {
-      level,
-      time: now(),
-      traceId,
-      opId: current,
-      parentOpId: this.ctx.parentOp(),
-      kind: 'point',
-      event,
-      module: fields.module,
-      code: fields.code,
-      user: context?.user,
-      http: fields.http,
-      db: fields.db,
-      err: fields.err,
-      extra: { orphanOp: !current, ...(fields.extra ?? {}) },
-      msg: fields.msg,
-    };
-    this.core.emit(ev, ev.msg);
+  point(level: LogLevel, event: string, fields: OpFields = {}): void {
+    this.core.emit(this.build(level, 'point', event, fields, this.currentOpMeta()));
   }
 
-  error(event: string, err: unknown, fields?: Partial<LogEvent>): void;
+  error(event: string, err: unknown, fields?: OpFields): void;
   error(message: unknown, ...optionalParams: unknown[]): void;
 
   error(first: unknown, ...rest: unknown[]): void {
     if (isStructuredErrorCall(first, rest)) {
-      const event = first;
       const [err, fieldsOrUndefined] = rest;
-      const fields = (fieldsOrUndefined as Partial<LogEvent> | undefined) ?? {};
-      const traceId = this.ensureTraceId();
-      const current = this.ctx.currentOp();
-      const normalized = normalizeError(err);
-      const context = this.ctx.get();
-
-      const ev: LogEvent = {
-        level: 'error',
-        time: now(),
-        traceId,
-        opId: current,
-        parentOpId: this.ctx.parentOp(),
-        kind: 'error',
-        event,
-        module: fields.module,
-        code: fields.code,
-        user: context?.user,
-        http: fields.http,
-        db: fields.db,
-        err: normalized,
-        extra: { orphanOp: !current, ...(fields.extra ?? {}) },
-        msg: fields.msg ?? getErrorMessage(err),
-      };
-      this.core.emit(ev, ev.msg);
+      const fields = (fieldsOrUndefined as OpFields | undefined) ?? {};
+      this.core.emit(
+        this.build(
+          'error',
+          'error',
+          first,
+          { ...fields, err: fields.err ?? normalizeError(err), msg: fields.msg ?? getErrorMessage(err) },
+          this.currentOpMeta(),
+        ),
+      );
       return;
     }
 
@@ -192,28 +133,50 @@ export class OpLoggerService implements LoggerService {
   }
 
   private emitLegacyPoint(
-    level: LogEvent['level'],
+    level: LogLevel,
     msg: string,
     module?: string,
     extra?: Record<string, unknown>,
   ): void {
-    const current = this.ctx.currentOp();
-    const traceId = this.ensureTraceId();
-    const context = this.ctx.get();
-    const ev: LogEvent = {
+    this.core.emit(this.build(level, 'point', level, { module, msg, extra }, this.currentOpMeta()));
+  }
+
+  /** Op ids for records that annotate the currently open operation (point, error, legacy). */
+  private currentOpMeta(): OpMeta {
+    const opId = this.ctx.currentOp();
+    return { opId, parentOpId: this.ctx.parentOp(), extra: { orphanOp: !opId } };
+  }
+
+  /**
+   * Single place that turns caller fields plus context into a `LogEvent`, so every
+   * record kind carries the same set of fields.
+   */
+  private build(
+    level: LogLevel,
+    kind: LogEvent['kind'],
+    event: string,
+    fields: OpFields,
+    meta: OpMeta,
+  ): LogEvent {
+    const extra = meta.extra || fields.extra ? { ...(meta.extra ?? {}), ...(fields.extra ?? {}) } : undefined;
+    return {
       level,
       time: now(),
-      traceId,
-      opId: current,
-      parentOpId: this.ctx.parentOp(),
-      kind: 'point',
-      event: level,
-      module,
-      msg,
-      extra: { orphanOp: !current, ...(extra ?? {}) },
-      user: context?.user,
+      traceId: this.ensureTraceId(),
+      opId: meta.opId,
+      parentOpId: meta.parentOpId,
+      kind,
+      event,
+      module: fields.module,
+      code: fields.code,
+      msg: fields.msg,
+      durMs: fields.durMs,
+      http: fields.http,
+      db: fields.db,
+      err: fields.err,
+      user: this.ctx.get()?.user,
+      extra,
     };
-    this.core.emit(ev, ev.msg);
   }
 
   /**

@@ -1,12 +1,12 @@
-import type { LogEvent } from '../../../core/log.types';
+import type { OpFields } from '../../../core/log.types';
 import type { OpContextService } from '../op-context.service';
 import type { OpLoggerService } from '../op-logger.service';
 
 // Utility types
 export type MaybePromise<T> = T | Promise<T>;
 export type ExtraFn<A extends unknown[]> = (args: Readonly<A>) => Record<string, unknown> | undefined;
-export type SuccessFn<R> = (result: R) => Partial<LogEvent> | undefined;
-export type ErrorFn = (err: unknown) => Partial<LogEvent> | undefined;
+export type SuccessFn<R> = (result: R) => OpFields | undefined;
+export type ErrorFn = (err: unknown) => OpFields | undefined;
 
 export type OpLogOptions<A extends unknown[] = unknown[], R = unknown> = {
   /** Logical module name to stamp on logs. */
@@ -88,7 +88,7 @@ export function OpLogged<A extends unknown[], R>(
         // Never fail a business call due to logging side-effects.
       }
 
-      const base: Partial<LogEvent> = { module: moduleName, extra: extra?.(args) };
+      const base: OpFields = { module: moduleName, extra: extra?.(args) };
 
       // Start operation (pushes opId into ALS).
       log?.start(event, base);

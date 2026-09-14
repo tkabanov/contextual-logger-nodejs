@@ -1,4 +1,5 @@
 import type { LogEvent, LogLevel } from '../log.types';
+import { safeStringify } from '../utils/safe-stringify';
 import type { LoggerTransport } from './transport.interface';
 
 export interface ConsoleTransportOptions {
@@ -22,7 +23,7 @@ export class ConsoleTransport implements LoggerTransport {
   }
 
   log(event: LogEvent): void {
-    this.stream.write(`${JSON.stringify(event)}\n`);
+    this.stream.write(`${safeStringify(event)}\n`);
   }
 
   async flush(): Promise<void> {

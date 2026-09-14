@@ -6,3 +6,4 @@ export * from './op-context.service';
 export * from './processors/sanitize.processor';
 export * from './transports/console.transport';
 export * from './transports/transport.interface';
+export * from './utils/safe-stringify';

@@ -1,8 +1,18 @@
 import { Logtail } from '@logtail/node';
 
-import type { LogEvent, LoggerTransport } from '../../core';
+import type { LogEvent, LoggerTransport, LogLevel } from '../../core';
 
 type LogtailPayload = Record<string, unknown>;
+
+export interface LogtailTransportOptions {
+  /** Better Stack source token. */
+  readonly sourceToken: string;
+  /** Ingest endpoint, e.g. `in.logs.betterstack.com` or a full `https://` URL. */
+  readonly endpoint: string;
+  /** Minimum level forwarded. Defaults to forwarding everything. */
+  readonly minLevel?: LogLevel;
+  readonly name?: string;
+}
 
 /**
  * Logtail (Better Stack) transport.
@@ -11,22 +21,20 @@ type LogtailPayload = Record<string, unknown>;
  * Requires the optional peer dependency `@logtail/node`.
  */
 export class LogtailTransport implements LoggerTransport {
-  readonly name = 'logtail';
+  readonly name: string;
+  readonly minLevel?: LogLevel;
   private readonly client: Logtail;
 
-  constructor(
-    private readonly sourceToken: string,
-    private readonly host: string,
-  ) {
-    if (!sourceToken?.trim()) {
-      throw new Error('LogtailTransport: token not found');
-    }
-    if (!host?.trim()) {
-      throw new Error('LogtailTransport: host not found');
-    }
-    const normalizedHost = host.trim();
-    this.client = new Logtail(sourceToken.trim(), {
-      endpoint: normalizedHost.startsWith('http') ? normalizedHost : `https://${normalizedHost}`,
+  constructor(options: LogtailTransportOptions) {
+    const sourceToken = options.sourceToken?.trim();
+    const endpoint = options.endpoint?.trim();
+    if (!sourceToken) throw new Error('LogtailTransport: sourceToken is required');
+    if (!endpoint) throw new Error('LogtailTransport: endpoint is required');
+
+    this.name = options.name ?? 'logtail';
+    this.minLevel = options.minLevel;
+    this.client = new Logtail(sourceToken, {
+      endpoint: endpoint.startsWith('http') ? endpoint : `https://${endpoint}`,
     });
   }
 

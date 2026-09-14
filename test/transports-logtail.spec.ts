@@ -32,13 +32,33 @@ describe('LogtailTransport', () => {
     expect('LogtailTransport' in core).toBe(false);
   });
 
-  it('throws when token or host missing', () => {
-    expect(() => new LogtailTransport('', 'host')).toThrow('LogtailTransport: token not found');
-    expect(() => new LogtailTransport('token', '')).toThrow('LogtailTransport: host not found');
+  it('throws when token or endpoint missing', () => {
+    expect(() => new LogtailTransport({ sourceToken: ' ', endpoint: 'host' })).toThrow(
+      'LogtailTransport: sourceToken is required',
+    );
+    expect(() => new LogtailTransport({ sourceToken: 'token', endpoint: '' })).toThrow(
+      'LogtailTransport: endpoint is required',
+    );
+  });
+
+  it('normalises the endpoint and exposes minLevel/name', () => {
+    const { Logtail } = jest.requireMock<{ Logtail: jest.Mock }>('@logtail/node');
+    const transport = new LogtailTransport({
+      sourceToken: 'token',
+      endpoint: 'in.logs.betterstack.com',
+      minLevel: 'warn',
+      name: 'bs',
+    });
+    expect(transport.minLevel).toBe('warn');
+    expect(transport.name).toBe('bs');
+    expect(Logtail).toHaveBeenCalledWith('token', { endpoint: 'https://in.logs.betterstack.com' });
+
+    new LogtailTransport({ sourceToken: 'token', endpoint: 'http://localhost:9000' });
+    expect(Logtail).toHaveBeenLastCalledWith('token', { endpoint: 'http://localhost:9000' });
   });
 
   it('routes level-specific calls to client', async () => {
-    const transport = new LogtailTransport('token', 'example.com');
+    const transport = new LogtailTransport({ sourceToken: 'token', endpoint: 'example.com' });
 
     await transport.logByLevel?.info?.({ ...baseEvent, level: 'info' });
     await transport.logByLevel?.error?.({ ...baseEvent, level: 'error', msg: 'e' });
@@ -48,7 +68,7 @@ describe('LogtailTransport', () => {
   });
 
   it('falls back to info call when using log()', async () => {
-    const transport = new LogtailTransport('token', 'example.com');
+    const transport = new LogtailTransport({ sourceToken: 'token', endpoint: 'example.com' });
 
     await transport.log({ ...baseEvent, msg: 'fallback' });
 
@@ -59,13 +79,13 @@ describe('LogtailTransport', () => {
   });
 
   it('flushes via underlying client', async () => {
-    const transport = new LogtailTransport('token', 'example.com');
+    const transport = new LogtailTransport({ sourceToken: 'token', endpoint: 'example.com' });
     await transport.flush?.();
     expect(mockClient.flush).toHaveBeenCalledTimes(1);
   });
 
   it('disposes by flushing pending events', async () => {
-    const transport = new LogtailTransport('token', 'example.com');
+    const transport = new LogtailTransport({ sourceToken: 'token', endpoint: 'example.com' });
     await transport.dispose?.();
     expect(mockClient.flush).toHaveBeenCalledTimes(1);
   });
