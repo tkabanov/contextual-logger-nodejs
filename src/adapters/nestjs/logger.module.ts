@@ -1,9 +1,11 @@
 import { DynamicModule, Global, Logger, Module, Provider } from '@nestjs/common';
 
-import { CoreLoggerService, LoggerTransportErrorHandler } from '../../core/core-logger.service';
+import { CoreLoggerService, type LoggerTransportErrorHandler } from '../../core/core-logger.service';
 import { LoggerProcessor } from '../../core/logger-processor.interface';
 import { ConsoleTransport } from '../../core/transports/console.transport';
 import { LoggerTransport } from '../../core/transports/transport.interface';
+import { NestCoreLoggerService } from './core-logger.provider';
+import { HttpContextMiddleware } from './http-context.middleware';
 import { OpContextService } from './op-context.service';
 import { OpLoggerService } from './op-logger.service';
 
@@ -26,6 +28,7 @@ export class LoggerModule {
     const providers: Provider[] = [
       OpContextService,
       OpLoggerService,
+      HttpContextMiddleware,
       { provide: Logger, useExisting: OpLoggerService },
       { provide: LOGGER_ALIAS, useExisting: OpLoggerService },
       { provide: TRANSPORTS, useValue: transports },
@@ -37,7 +40,7 @@ export class LoggerModule {
           tps: LoggerTransport[],
           procs: LoggerProcessor[],
           onError?: LoggerTransportErrorHandler,
-        ) => new CoreLoggerService(tps, procs, onError),
+        ) => new NestCoreLoggerService(tps, procs, onError),
         inject: [TRANSPORTS, PROCESSORS, ERROR_HANDLER],
       },
     ];
@@ -45,7 +48,14 @@ export class LoggerModule {
     return {
       module: LoggerModule,
       providers,
-      exports: [OpContextService, OpLoggerService, CoreLoggerService, Logger, LOGGER_ALIAS],
+      exports: [
+        OpContextService,
+        OpLoggerService,
+        CoreLoggerService,
+        HttpContextMiddleware,
+        Logger,
+        LOGGER_ALIAS,
+      ],
     };
   }
 }

@@ -1,5 +1,7 @@
 import type { LogEvent } from '../src';
-import { LogtailTransport } from '../src';
+import * as root from '../src';
+import * as core from '../src/core';
+import { LogtailTransport } from '../src/transports/logtail';
 
 const mockClient = {
   debug: jest.fn().mockResolvedValue(undefined),
@@ -23,6 +25,11 @@ const baseEvent: LogEvent = {
 describe('LogtailTransport', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('is not part of the root or core entry points', () => {
+    expect('LogtailTransport' in root).toBe(false);
+    expect('LogtailTransport' in core).toBe(false);
   });
 
   it('throws when token or host missing', () => {

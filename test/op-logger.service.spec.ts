@@ -134,24 +134,43 @@ describe('OpLoggerService', () => {
     expect(secondEvent.user?.id).toBe('user-updated');
   });
 
-  it('auto-seeds a trace when none exists', async () => {
-    const createSpy = jest.spyOn(context, 'create');
+  it('generates a per-event trace id outside ALS scope without binding it', async () => {
     const enterSpy = jest.spyOn(context, 'enter');
-    service.point('info', 'auto.seed', { msg: 'auto' });
+    service.point('info', 'auto.one', { msg: 'auto' });
+    service.point('info', 'auto.two', { msg: 'auto' });
     await waitForDispatch();
 
-    expect(createSpy).toHaveBeenCalledTimes(1);
-    const [generatedTrace] = createSpy.mock.calls[0];
-    expect(typeof generatedTrace).toBe('string');
-    expect(generatedTrace).toHaveLength(36);
-    expect(enterSpy).toHaveBeenCalledWith(expect.objectContaining({ traceId: generatedTrace }));
-    expect(context.traceId()).toBe(generatedTrace);
-    const event = transport.events[0];
-    expect(event.traceId).toBe(generatedTrace);
-    expect(event.extra?.orphanOp).toBe(true);
+    expect(enterSpy).not.toHaveBeenCalled();
+    expect(context.get()).toBeUndefined();
+    const [first, second] = transport.events;
+    expect(first.traceId).toHaveLength(36);
+    expect(second.traceId).toHaveLength(36);
+    expect(first.traceId).not.toBe(second.traceId);
+    expect(first.extra?.orphanOp).toBe(true);
+  });
 
-    createSpy.mockRestore();
-    enterSpy.mockRestore();
+  it('does not leak a bootstrap trace into later independent tasks', async () => {
+    service.log('App bootstrapped', 'Bootstrap');
+    await waitForDispatch();
+    const bootTrace = transport.events[0].traceId;
+
+    await Promise.all(
+      [1, 2].map(
+        (i) =>
+          new Promise<void>((resolve) =>
+            setTimeout(() => {
+              context.run(`trace-${i}`, () => service.start(`task.${i}`));
+              resolve();
+            }, 1),
+          ),
+      ),
+    );
+    await waitForDispatch();
+
+    const tasks = transport.events.filter((e) => e.event.startsWith('task.'));
+    expect(tasks.map((e) => e.traceId).sort()).toEqual(['trace-1', 'trace-2']);
+    expect(tasks.every((e) => e.traceId !== bootTrace)).toBe(true);
+    expect(context.get()).toBeUndefined();
   });
 
   it('normalises BadRequestException in structured error events', async () => {
@@ -186,6 +205,58 @@ describe('OpLoggerService', () => {
       expect(legacyEvent?.extra?.err).toEqual(
         expect.objectContaining({ message: 'legacy-failure', stack: legacyError.stack }),
       );
+    });
+  });
+
+  it('treats error(message, stack, context) as the Nest legacy signature', async () => {
+    await runWithContext(async () => {
+      const stack = 'Error: connect ECONNREFUSED\n    at TCPConnectWrap.afterConnect (node:net:1494:16)';
+      service.error('Cannot connect to DB', stack, 'TypeOrmModule');
+      await waitForDispatch();
+
+      const event = transport.events[0];
+      expect(event.kind).toBe('point');
+      expect(event.event).toBe('error');
+      expect(event.msg).toBe('Cannot connect to DB');
+      expect(event.module).toBe('TypeOrmModule');
+      expect(event.extra?.err).toEqual(expect.objectContaining({ message: 'Cannot connect to DB', stack }));
+    });
+  });
+
+  it('treats error(message, context) as the Nest legacy signature', async () => {
+    await runWithContext(async () => {
+      service.error('Something failed', 'OrdersService');
+      await waitForDispatch();
+
+      const event = transport.events[0];
+      expect(event.kind).toBe('point');
+      expect(event.msg).toBe('Something failed');
+      expect(event.module).toBe('OrdersService');
+      expect(event.err).toBeUndefined();
+    });
+  });
+
+  it('does not mistake a context containing "at " for a stack trace', async () => {
+    await runWithContext(async () => {
+      service.error('Boom', 'Chat Service');
+      await waitForDispatch();
+
+      expect(transport.events[0].module).toBe('Chat Service');
+    });
+  });
+
+  it('keeps structured error(event, err) working with non-Error payloads and fields', async () => {
+    await runWithContext(async () => {
+      service.error('orders.create', { code: 'E_DUP' }, { module: 'OrdersService', code: 'E_DUP' });
+      service.error('orders.create', undefined);
+      await waitForDispatch();
+
+      const [withPayload, withUndefined] = transport.events;
+      expect(withPayload.kind).toBe('error');
+      expect(withPayload.event).toBe('orders.create');
+      expect(withPayload.module).toBe('OrdersService');
+      expect(withPayload.err?.message).toBe('{"code":"E_DUP"}');
+      expect(withUndefined.kind).toBe('error');
     });
   });
 

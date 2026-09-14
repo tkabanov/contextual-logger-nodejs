@@ -1,9 +1,7 @@
-import { Injectable, OnModuleDestroy, Optional } from '@nestjs/common';
-
 import { levelGte } from './level.utils';
-import { LogEvent, LogLevel } from './log.types';
-import { LoggerProcessor } from './logger-processor.interface';
-import { LoggerTransport } from './transports/transport.interface';
+import type { LogEvent, LogLevel } from './log.types';
+import type { LoggerProcessor } from './logger-processor.interface';
+import type { LoggerTransport } from './transports/transport.interface';
 
 export type LoggerTransportErrorHandler = (transport: LoggerTransport, error: unknown) => void;
 
@@ -11,13 +9,15 @@ type BaseFields = Omit<LogEvent, 'level' | 'msg' | 'time'>;
 
 /**
  * Core logging engine: processes and fan-outs events.
+ *
+ * Framework-agnostic: no decorators, no DI metadata. Framework adapters wrap it
+ * (see `NestCoreLoggerService` in the NestJS adapter) to hook into lifecycle events.
  */
-@Injectable()
-export class CoreLoggerService implements OnModuleDestroy {
+export class CoreLoggerService {
   constructor(
-    @Optional() private readonly transports: LoggerTransport[] = [],
-    @Optional() private readonly processors: LoggerProcessor[] = [],
-    @Optional() private readonly onTransportError?: LoggerTransportErrorHandler,
+    private readonly transports: LoggerTransport[] = [],
+    private readonly processors: LoggerProcessor[] = [],
+    private readonly onTransportError?: LoggerTransportErrorHandler,
   ) {}
 
   emit(event: LogEvent, consoleMsg?: string): void {
@@ -69,7 +69,8 @@ export class CoreLoggerService implements OnModuleDestroy {
     return { emit, log, debug, info, warn, error, fatal };
   }
 
-  async onModuleDestroy(): Promise<void> {
+  /** Flush and dispose every transport. Call on graceful shutdown. */
+  async close(): Promise<void> {
     for (const t of this.transports) {
       if (t.flush) await t.flush();
       if (t.dispose) await t.dispose();

@@ -25,3 +25,6 @@ pnpm-debug.log*
 
 # TypeScript metadata
 *.tsbuildinfo
+
+# oh-my-claudecode local state
+.omc/

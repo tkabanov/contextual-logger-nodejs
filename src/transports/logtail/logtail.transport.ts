@@ -1,12 +1,14 @@
 import { Logtail } from '@logtail/node';
 
-import type { LogEvent } from '../log.types';
-import type { LoggerTransport } from './transport.interface';
+import type { LogEvent, LoggerTransport } from '../../core';
 
 type LogtailPayload = Record<string, unknown>;
 
 /**
- * Logtail transport.
+ * Logtail (Better Stack) transport.
+ *
+ * Entry point: `@contextual-logger/nodejs/transports/logtail`.
+ * Requires the optional peer dependency `@logtail/node`.
  */
 export class LogtailTransport implements LoggerTransport {
   readonly name = 'logtail';

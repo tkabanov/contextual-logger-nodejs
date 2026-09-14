@@ -19,14 +19,26 @@ export class OpContext {
     return { traceId, opStack: [], opTimes: new Map(), user: userId ? { id: userId } : undefined };
   }
 
-  /** Enter the given store for the current async execution. */
+  /**
+   * Enter the given store for the rest of the current synchronous execution and
+   * everything spawned from it.
+   *
+   * Prefer `run`/`runWith`: `enterWith` never "exits", so calling it from a
+   * long-lived context (bootstrap, a shared event loop tick) leaks the store into
+   * every async task created afterwards, including unrelated requests.
+   */
   enter(store: OperationContext): void {
     this.als.enterWith(store); // Node 18+: sticks for all subsequent async work
   }
 
-  /** Legacy helper, still useful outside HTTP (jobs, etc). */
+  /** Run fn inside a fresh store; the store is scoped to fn and its async descendants. */
   run<T>(traceId: string, fn: () => T): T {
     return this.als.run(this.create(traceId), fn);
+  }
+
+  /** Run fn inside an existing store (e.g. one created with `create`). */
+  runWith<T>(store: OperationContext, fn: () => T): T {
+    return this.als.run(store, fn);
   }
 
   get(): OperationContext | undefined {

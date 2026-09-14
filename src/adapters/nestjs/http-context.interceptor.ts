@@ -1,14 +1,31 @@
-// src/adapters/nestjs/http-context.interceptor.ts
 import { randomUUID } from 'node:crypto';
+import type { IncomingHttpHeaders } from 'node:http';
 
-import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
-import type { IncomingHttpHeaders } from 'http';
+import { type CallHandler, type ExecutionContext, Injectable, type NestInterceptor } from '@nestjs/common';
 import { Observable } from 'rxjs';
-import { catchError, finalize, tap } from 'rxjs/operators';
+import { catchError, finalize } from 'rxjs/operators';
 
 import { OpContextService } from './op-context.service';
 import { OpLoggerService } from './op-logger.service';
+import { extractTraceId, TRACE_ID_HEADER } from './trace-id.utils';
 
+type RequestLike = {
+  method: string;
+  url: string;
+  originalUrl?: string;
+  headers: IncomingHttpHeaders;
+  user?: { id?: string };
+};
+type ResponseLike = { statusCode: number; setHeader: (k: string, v: string) => void };
+
+/**
+ * Logs the `http.request` lifecycle (start / finish / error) for every handled request.
+ *
+ * If `HttpContextMiddleware` already established a store for this request it is
+ * reused (and enriched with `req.user`, which guards may have populated by now).
+ * Otherwise a new store is created and scoped with `als.run` around the handler
+ * chain, so it never leaks outside the request.
+ */
 @Injectable()
 export class HttpContextInterceptor implements NestInterceptor {
   constructor(
@@ -18,62 +35,38 @@ export class HttpContextInterceptor implements NestInterceptor {
 
   intercept(ex: ExecutionContext, next: CallHandler): Observable<unknown> {
     const http = ex.switchToHttp();
-    const req = http.getRequest<{
-      method: string;
-      url: string;
-      originalUrl?: string;
-      headers: IncomingHttpHeaders;
-      user?: { id?: string };
-    }>();
-    const res = http.getResponse<{ statusCode: number; setHeader: (k: string, v: string) => void }>();
-
-    const traceId = extractTraceId(req.headers) ?? randomUUID();
+    const req = http.getRequest<RequestLike>();
+    const res = http.getResponse<ResponseLike>();
     const url = req.originalUrl ?? req.url;
 
-    // Pin ALS store for the whole request lifecycle.
-    const store = this.ctx.create(traceId, req.user?.id);
-    this.ctx.enter(store);
+    const existing = this.ctx.get();
+    const store = existing ?? this.ctx.create(extractTraceId(req.headers) ?? randomUUID(), req.user?.id);
+    if (existing && req.user?.id && !existing.user?.id) existing.user = { id: req.user.id };
+    if (!existing) res.setHeader(TRACE_ID_HEADER, store.traceId);
 
-    this.log.start('http.request', {
-      module: 'Http',
-      http: { method: req.method, url },
-      msg: `${req.method} ${url}`,
-    });
+    return new Observable<unknown>((subscriber) =>
+      this.ctx.runWith(store, () => {
+        this.log.start('http.request', {
+          module: 'Http',
+          http: { method: req.method, url },
+          msg: `${req.method} ${url}`,
+        });
 
-    res.setHeader('x-trace-id', traceId);
-
-    // Ensure finish on success; error on failure; keep ALS active.
-    let ok = true;
-
-    return next.handle().pipe(
-      tap(() => {
-        /* no-op, but keeps operator chain */
-      }),
-      catchError((err: unknown) => {
-        ok = false;
-        this.log.error('http.request', err, { http: { status: res.statusCode } });
-        throw err;
-      }),
-      finalize(() => {
-        if (ok) {
-          this.log.finish('http.request', { http: { status: res.statusCode } });
-        }
+        let ok = true;
+        return next
+          .handle()
+          .pipe(
+            catchError((err: unknown) => {
+              ok = false;
+              this.log.error('http.request', err, { http: { status: res.statusCode } });
+              throw err;
+            }),
+            finalize(() => {
+              if (ok) this.log.finish('http.request', { http: { status: res.statusCode } });
+            }),
+          )
+          .subscribe(subscriber);
       }),
     );
   }
-}
-
-function extractTraceId(headers: IncomingHttpHeaders): string | undefined {
-  const map: Record<string, string> = {};
-  for (const [k, v] of Object.entries(headers)) {
-    if (Array.isArray(v)) map[k.toLowerCase()] = v[0] ?? '';
-    else if (typeof v === 'string') map[k.toLowerCase()] = v;
-  }
-  return map['x-trace-id'] || fromTraceparent(map['traceparent']);
-}
-
-function fromTraceparent(tp?: string): string | undefined {
-  if (!tp) return undefined;
-  const parts = tp.split('-'); // version-traceId-parentId-flags
-  return parts[1]?.length === 32 ? parts[1] : undefined;
 }

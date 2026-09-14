@@ -1,11 +1,24 @@
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
-import type { Observable } from 'rxjs';
-import { lastValueFrom, of, throwError } from 'rxjs';
+import { defer, lastValueFrom, throwError } from 'rxjs';
 
-import type { OpContextService, OpLoggerService } from '../src';
-import { HttpContextInterceptor } from '../src';
+import type { LogEvent } from '../src';
+import { CoreLoggerService, HttpContextInterceptor, OpContextService, OpLoggerService } from '../src';
+
+class ArrayTransport {
+  readonly name = 'array';
+  readonly events: LogEvent[] = [];
+  log(event: LogEvent): void {
+    this.events.push(event);
+  }
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 describe('HttpContextInterceptor', () => {
+  let ctx: OpContextService;
+  let transport: ArrayTransport;
+  let interceptor: HttpContextInterceptor;
+
   const createExecutionContext = (
     req: Record<string, unknown>,
     res: Record<string, unknown>,
@@ -17,31 +30,19 @@ describe('HttpContextInterceptor', () => {
       }),
     }) as unknown as ExecutionContext;
 
-  const createHandler = (stream: Observable<unknown>): CallHandler => ({
-    handle: jest.fn(() => stream),
+  // Mirrors Nest: the route handler runs lazily on subscribe.
+  const createHandler = (handler: () => Promise<unknown>): CallHandler => ({
+    handle: jest.fn(() => defer(handler)),
   });
-
-  let ctxMock: { create: jest.Mock; enter: jest.Mock };
-  let logMock: { start: jest.Mock; finish: jest.Mock; error: jest.Mock };
-  let interceptor: HttpContextInterceptor;
 
   beforeEach(() => {
-    ctxMock = {
-      create: jest.fn(() => ({ traceId: 'trace-store' })),
-      enter: jest.fn(),
-    };
-    logMock = {
-      start: jest.fn(),
-      finish: jest.fn(),
-      error: jest.fn(),
-    };
-    interceptor = new HttpContextInterceptor(
-      ctxMock as unknown as OpContextService,
-      logMock as unknown as OpLoggerService,
-    );
+    ctx = new OpContextService();
+    transport = new ArrayTransport();
+    const core = new CoreLoggerService([transport]);
+    interceptor = new HttpContextInterceptor(ctx, new OpLoggerService(ctx, core));
   });
 
-  it('reuses incoming trace id, logs lifecycle, and decorates response headers', async () => {
+  it('reuses incoming trace id, scopes the store around the handler, and sets the response header', async () => {
     const req = {
       method: 'GET',
       url: '/health',
@@ -49,20 +50,44 @@ describe('HttpContextInterceptor', () => {
       user: { id: 'user-42' },
     };
     const res = { statusCode: 200, setHeader: jest.fn() };
-    const handler = createHandler(of('ok'));
-
-    const result$ = interceptor.intercept(createExecutionContext(req, res), handler);
-    await expect(lastValueFrom(result$)).resolves.toBe('ok');
-
-    expect(ctxMock.create).toHaveBeenCalledWith('trace-123', 'user-42');
-    expect(ctxMock.enter).toHaveBeenCalledWith({ traceId: 'trace-store' });
-    expect(logMock.start).toHaveBeenCalledWith('http.request', {
-      module: 'Http',
-      http: { method: 'GET', url: '/health' },
-      msg: 'GET /health',
+    let seenInHandler: string | undefined;
+    const handler = createHandler(async () => {
+      await flush();
+      seenInHandler = ctx.traceId();
+      return 'ok';
     });
-    expect(logMock.finish).toHaveBeenCalledWith('http.request', { http: { status: 200 } });
+
+    await expect(
+      lastValueFrom(interceptor.intercept(createExecutionContext(req, res), handler)),
+    ).resolves.toBe('ok');
+    await flush();
+
+    expect(seenInHandler).toBe('trace-123');
     expect(res.setHeader).toHaveBeenCalledWith('x-trace-id', 'trace-123');
+    expect(ctx.get()).toBeUndefined(); // nothing leaked past the request
+
+    const [start, finish] = transport.events;
+    expect(start).toEqual(
+      expect.objectContaining({
+        kind: 'start',
+        event: 'http.request',
+        traceId: 'trace-123',
+        module: 'Http',
+        http: { method: 'GET', url: '/health' },
+        msg: 'GET /health',
+        user: { id: 'user-42' },
+      }),
+    );
+    expect(finish).toEqual(
+      expect.objectContaining({
+        kind: 'finish',
+        event: 'http.request',
+        traceId: 'trace-123',
+        http: { status: 200 },
+      }),
+    );
+    expect(finish.opId).toBe(start.opId);
+    expect(finish.extra?.orphanOp).toBe(false);
   });
 
   it('extracts trace id from traceparent when header missing', async () => {
@@ -73,35 +98,83 @@ describe('HttpContextInterceptor', () => {
       headers: { traceparent: '00-12345678901234567890123456789012-abcdefabcdefabcd-01' },
     };
     const res = { statusCode: 202, setHeader: jest.fn() };
-    const handler = createHandler(of(null));
 
-    const result$ = interceptor.intercept(createExecutionContext(req, res), handler);
-    await expect(lastValueFrom(result$)).resolves.toBeNull();
+    await lastValueFrom(
+      interceptor.intercept(
+        createExecutionContext(req, res),
+        createHandler(() => Promise.resolve(null)),
+      ),
+    );
+    await flush();
 
-    expect(ctxMock.create).toHaveBeenCalledWith('12345678901234567890123456789012', undefined);
     expect(res.setHeader).toHaveBeenCalledWith('x-trace-id', '12345678901234567890123456789012');
-    expect(logMock.start).toHaveBeenCalledWith('http.request', {
-      module: 'Http',
-      http: { method: 'POST', url: '/jobs?cursor=1' },
-      msg: 'POST /jobs?cursor=1',
-    });
+    expect(transport.events[0]).toEqual(
+      expect.objectContaining({
+        traceId: '12345678901234567890123456789012',
+        http: { method: 'POST', url: '/jobs?cursor=1' },
+        msg: 'POST /jobs?cursor=1',
+      }),
+    );
   });
 
   it('logs error when downstream handler fails and propagates the exception', async () => {
-    const req = {
-      method: 'PATCH',
-      url: '/orders/1',
-      headers: {},
-    };
+    const req = { method: 'PATCH', url: '/orders/1', headers: {} };
     const res = { statusCode: 500, setHeader: jest.fn() };
-    const handler = createHandler(throwError(() => Object.assign(new Error('boom'), { status: 500 })));
+    const handler: CallHandler = { handle: () => throwError(() => new Error('boom')) };
 
-    const execution = interceptor.intercept(createExecutionContext(req, res), handler);
-    await expect(lastValueFrom(execution)).rejects.toThrow('boom');
+    await expect(
+      lastValueFrom(interceptor.intercept(createExecutionContext(req, res), handler)),
+    ).rejects.toThrow('boom');
+    await flush();
 
-    expect(logMock.error).toHaveBeenCalledWith('http.request', expect.any(Error), {
-      http: { status: 500 },
-    });
-    expect(logMock.finish).not.toHaveBeenCalled();
+    const kinds = transport.events.map((e) => e.kind);
+    expect(kinds).toEqual(['start', 'error']);
+    expect(transport.events[1]).toEqual(
+      expect.objectContaining({ err: expect.objectContaining({ message: 'boom' }), http: { status: 500 } }),
+    );
+  });
+
+  it('isolates concurrent requests from each other', async () => {
+    const run = (traceId: string, delay: number) => {
+      const req = { method: 'GET', url: `/${traceId}`, headers: { 'x-trace-id': traceId } };
+      const res = { statusCode: 200, setHeader: jest.fn() };
+      const handler = createHandler(async () => {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return ctx.traceId();
+      });
+      return lastValueFrom(interceptor.intercept(createExecutionContext(req, res), handler));
+    };
+
+    const [a, b] = await Promise.all([run('trace-a', 10), run('trace-b', 1)]);
+    await flush();
+
+    expect(a).toBe('trace-a');
+    expect(b).toBe('trace-b');
+    const finishes = transport.events.filter((e) => e.kind === 'finish');
+    expect(finishes.map((e) => e.traceId).sort()).toEqual(['trace-a', 'trace-b']);
+    expect(finishes.every((e) => e.extra?.orphanOp === false)).toBe(true);
+  });
+
+  it('reuses a store established earlier in the pipeline and enriches it with req.user', async () => {
+    const req = {
+      method: 'GET',
+      url: '/me',
+      headers: { 'x-trace-id': 'ignored-header' },
+      user: { id: 'user-7' },
+    };
+    const res = { statusCode: 200, setHeader: jest.fn() };
+    const handler = createHandler(() => Promise.resolve(ctx.traceId()));
+
+    const store = ctx.create('trace-from-middleware');
+    const result = await ctx.runWith(store, () =>
+      lastValueFrom(interceptor.intercept(createExecutionContext(req, res), handler)),
+    );
+    await flush();
+
+    expect(result).toBe('trace-from-middleware');
+    expect(res.setHeader).not.toHaveBeenCalled(); // middleware already did it
+    expect(store.user).toEqual({ id: 'user-7' });
+    expect(transport.events.every((e) => e.traceId === 'trace-from-middleware')).toBe(true);
+    expect(transport.events[0].user).toEqual({ id: 'user-7' });
   });
 });

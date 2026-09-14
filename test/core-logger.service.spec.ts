@@ -125,7 +125,7 @@ describe('CoreLoggerService', () => {
     const transport = new RecordingTransport();
     const logger = new CoreLoggerService([transport]);
 
-    await logger.onModuleDestroy();
+    await logger.close();
 
     expect(transport.flush).toHaveBeenCalledTimes(1);
     expect(transport.dispose).toHaveBeenCalledTimes(1);

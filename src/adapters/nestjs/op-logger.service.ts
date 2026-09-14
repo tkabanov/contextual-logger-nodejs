@@ -13,6 +13,11 @@ export class OpLoggerService implements LoggerService {
     private readonly core: CoreLoggerService,
   ) {}
 
+  /**
+   * Explicitly bind a trace to the current async execution (cron jobs, consumers).
+   * Uses `enterWith`, so call it at the start of an isolated task, never from a
+   * shared context such as application bootstrap. Prefer `OpContextService.run`.
+   */
   seed(traceId: string, options: { userId?: string } = {}): void {
     const store = this.ctx.create(traceId, options.userId);
     this.ctx.enter(store);
@@ -95,7 +100,7 @@ export class OpLoggerService implements LoggerService {
   error(message: unknown, ...optionalParams: unknown[]): void;
 
   error(first: unknown, ...rest: unknown[]): void {
-    if (typeof first === 'string' && rest.length) {
+    if (isStructuredErrorCall(first, rest)) {
       const event = first;
       const [err, fieldsOrUndefined] = rest;
       const fields = (fieldsOrUndefined as Partial<LogEvent> | undefined) ?? {};
@@ -115,6 +120,8 @@ export class OpLoggerService implements LoggerService {
         module: fields.module,
         code: fields.code,
         user: context?.user,
+        http: fields.http,
+        db: fields.db,
         err: normalized,
         extra: { orphanOp: !current, ...(fields.extra ?? {}) },
         msg: fields.msg ?? getErrorMessage(err),
@@ -190,13 +197,15 @@ export class OpLoggerService implements LoggerService {
     this.core.emit(ev, ev.msg);
   }
 
+  /**
+   * Trace id for the current event. Outside an ALS scope a one-off id is generated
+   * per event and deliberately NOT stored: `enterWith` from an unscoped call site
+   * (e.g. bootstrap logging) would leak that store into every later async task,
+   * including unrelated HTTP requests. Use `seed()` or `OpContextService.run` to
+   * bind a trace explicitly.
+   */
   private ensureTraceId(): string {
-    const existing = this.ctx.traceId();
-    if (existing) return existing;
-
-    const store = this.ctx.create(randomUUID());
-    this.ctx.enter(store);
-    return store.traceId;
+    return this.ctx.traceId() ?? randomUUID();
   }
 }
 
@@ -231,6 +240,28 @@ function isErrorLike(v: unknown): v is Error | BadRequestException {
   return v instanceof Error || v instanceof BadRequestException;
 }
 
+/**
+ * Distinguish the structured overload `error(event, err, fields?)` from Nest's
+ * legacy `error(message, stack?, context?)` / `error(message, ...params)`.
+ *
+ * A call is structured when the first argument is a string event name, the second
+ * argument exists and is not a string (Nest passes stack and context as strings),
+ * and the optional third argument is a plain fields object.
+ */
+function isStructuredErrorCall(first: unknown, rest: unknown[]): first is string {
+  if (typeof first !== 'string' || rest.length === 0 || rest.length > 2) return false;
+  const [err, fields] = rest;
+  if (typeof err === 'string') return false;
+  if (rest.length === 2 && !isPlainObject(fields)) return false;
+  return true;
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+  const proto = Object.getPrototypeOf(v) as unknown;
+  return proto === Object.prototype || proto === null;
+}
+
 function parseLegacyArgs(
   message: unknown,
   optionalParams: unknown[],
@@ -258,7 +289,7 @@ function parseLegacyArgs(
 }
 
 function looksLikeStack(s: string): boolean {
-  return s.includes('\n') || s.includes('at ');
+  return /\n\s*at\s/.test(s) || /^\w*Error\b.*\n/.test(s);
 }
 function safeStringify(v: unknown): string {
   try {

@@ -1,8 +1,17 @@
 {
   "name": "@contextual-logger/nodejs",
   "version": "0.1.0",
-  "description": "Framework-agnostic contextual logger with AsyncLocalStorage trace propagation and a NestJS adapter.",
-  "keywords": ["logger", "context", "async-local-storage", "observability", "nestjs", "nodejs"],
+  "description": "Framework-agnostic contextual logger with AsyncLocalStorage trace propagation, a NestJS adapter and optional Logtail/Sentry transports.",
+  "keywords": [
+    "logger",
+    "context",
+    "async-local-storage",
+    "observability",
+    "nestjs",
+    "nodejs",
+    "logtail",
+    "sentry"
+  ],
   "homepage": "https://github.com/tkabanov/contextual-logger-nodejs#readme",
   "repository": {
     "type": "git",
@@ -21,6 +30,43 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "require": "./dist/core/index.js",
+      "default": "./dist/core/index.js"
+    },
+    "./nestjs": {
+      "types": "./dist/adapters/nestjs/index.d.ts",
+      "require": "./dist/adapters/nestjs/index.js",
+      "default": "./dist/adapters/nestjs/index.js"
+    },
+    "./transports/logtail": {
+      "types": "./dist/transports/logtail/index.d.ts",
+      "require": "./dist/transports/logtail/index.js",
+      "default": "./dist/transports/logtail/index.js"
+    },
+    "./transports/sentry": {
+      "types": "./dist/transports/sentry/index.d.ts",
+      "require": "./dist/transports/sentry/index.js",
+      "default": "./dist/transports/sentry/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "core": [
+        "dist/core/index.d.ts"
+      ],
+      "nestjs": [
+        "dist/adapters/nestjs/index.d.ts"
+      ],
+      "transports/logtail": [
+        "dist/transports/logtail/index.d.ts"
+      ],
+      "transports/sentry": [
+        "dist/transports/sentry/index.d.ts"
+      ]
     }
   },
   "files": [
@@ -45,22 +91,35 @@
   },
   "peerDependencies": {
     "@nestjs/common": "^10.0.0 || ^11.0.0",
-    "@logtail/node": "^0.5.6"
+    "rxjs": "^7.0.0",
+    "@logtail/node": "^0.5.6",
+    "@sentry/node": ">=8.0.0"
   },
   "peerDependenciesMeta": {
+    "@nestjs/common": {
+      "optional": true
+    },
+    "rxjs": {
+      "optional": true
+    },
     "@logtail/node": {
+      "optional": true
+    },
+    "@sentry/node": {
       "optional": true
     }
   },
   "devDependencies": {
+    "@logtail/node": "^0.5.6",
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/testing": "^10.4.20",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/commit-analyzer": "^13.0.0",
     "@semantic-release/git": "^10.0.0",
     "@semantic-release/github": "^12.0.0",
     "@semantic-release/npm": "^13.0.0",
-    "@logtail/node": "^0.5.6",
-    "@nestjs/common": "^10.0.0",
-    "@nestjs/testing": "^10.4.20",
+    "@sentry/node": "^10.74.0",
+    "@types/jest": "^29.5.12",
     "@types/node": "^20.11.30",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
@@ -74,11 +133,11 @@
     "lint-staged": "^15.2.10",
     "prettier": "^3.3.3",
     "rimraf": "^5.0.5",
-    "ts-node": "^10.9.2",
+    "rxjs": "^7.8.2",
+    "semantic-release": "^24.0.0",
     "ts-jest": "^29.2.5",
-    "@types/jest": "^29.5.12",
-    "typescript": "~5.5.4",
-    "semantic-release": "^24.0.0"
+    "ts-node": "^10.9.2",
+    "typescript": "~5.5.4"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
@@ -91,4 +150,3 @@
     "access": "public"
   }
 }
-

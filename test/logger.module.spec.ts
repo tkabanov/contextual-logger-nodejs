@@ -97,4 +97,24 @@ describe('LoggerModule', () => {
 
     await moduleRef.close();
   });
+
+  it('flushes and disposes transports on application shutdown', async () => {
+    const transport: LoggerTransport = {
+      name: 'lifecycle',
+      log: jest.fn(),
+      flush: jest.fn(() => Promise.resolve()),
+      dispose: jest.fn(() => Promise.resolve()),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      imports: [LoggerModule.forRoot({ transports: [transport] })],
+    }).compile();
+    await moduleRef.init();
+
+    expect(moduleRef.get(CoreLoggerService)).toBeInstanceOf(CoreLoggerService);
+    await moduleRef.close();
+
+    expect(transport.flush).toHaveBeenCalledTimes(1);
+    expect(transport.dispose).toHaveBeenCalledTimes(1);
+  });
 });
