@@ -168,7 +168,8 @@ describe('OpLoggerService', () => {
     expect(context.get()).toBeUndefined();
   });
 
-  it('allows manual context seeding outside ALS scope', async () => {
+  it('allows manual context seeding outside ALS scope (deprecated seed())', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- the deprecated API is the subject of this test
     service.seed('trace-manual', { userId: 'user-seeded' });
     service.point('info', 'manual.point', { msg: 'manual' });
     await waitForDispatch();

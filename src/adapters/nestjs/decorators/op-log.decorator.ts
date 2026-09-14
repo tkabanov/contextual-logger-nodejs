@@ -96,7 +96,6 @@ export function OpLogged<A extends unknown[], R>(
       // Call the original method.
       let result: MaybePromise<R>;
       try {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment,@typescript-eslint/no-unsafe-member-access,@typescript-eslint/no-unsafe-call
         result = original.apply(this, args);
       } catch (err) {
         const errFields = onError?.(err) ?? {};
@@ -124,7 +123,7 @@ export function OpLogged<A extends unknown[], R>(
       const successFields = onSuccess?.(result) ?? {};
       log?.finish(event, { ...base, ...successFields });
       return result;
-    } as (...args: A) => MaybePromise<R>;
+    };
   };
 
   return decorator;

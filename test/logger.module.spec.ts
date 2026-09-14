@@ -91,7 +91,7 @@ describe('LoggerModule', () => {
       time: new Date().toISOString(),
       traceId: 'trace-123',
       msg: 'hello',
-    } as LogEvent);
+    });
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(processor.handle).toHaveBeenCalledTimes(1);

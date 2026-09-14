@@ -14,9 +14,9 @@ describe('SanitizeProcessor', () => {
         password: 'secret123',
         token: 'abcd',
         safe: 'value',
-      } as Record<string, unknown>,
+      },
       token: 'top-secret',
-    } as Record<string, unknown>,
+    },
     user: {
       id: 'user-1',
     },

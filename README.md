@@ -40,7 +40,7 @@ All peer dependencies are optional. Each entry point below loads only what it ne
 
 Transports are deliberately kept out of the root and core entry points: adding a new sink to your app is an explicit import plus its SDK, and nothing else in the package changes.
 
-The toolchain targets Node.js 18+ and TypeScript 5.5. AsyncLocalStorage support is required (Node 18 or newer).
+The toolchain targets Node.js 20+ and TypeScript 5.5. CI runs on Node 20, 22 and 24.
 
 ## Quick Start (NestJS)
 
@@ -125,7 +125,7 @@ How to read it:
 
 ## Runtime Requirements
 
-- Node.js 18+ (AsyncLocalStorage stable API)
+- Node.js 20+ (Node 18 reached end of life in April 2025)
 - TypeScript 5.5+
 - NestJS 10+ for the provided adapter
 
@@ -561,7 +561,7 @@ steps:
       fetch-depth: 0 # semantic-release needs the previous tag
   - uses: actions/setup-node@v4
     with:
-      node-version: 20
+      node-version: 22
       registry-url: https://registry.npmjs.org
   - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
   - run: npm ci

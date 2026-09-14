@@ -62,7 +62,7 @@ export class SentryTransport implements LoggerTransport {
   private readonly flushTimeoutMs: number;
 
   constructor(options: SentryTransportOptions = {}) {
-    this.client = options.client ?? (Sentry as SentryClientLike);
+    this.client = options.client ?? Sentry;
     this.minLevel = options.minLevel ?? 'error';
     this.captureMessages = options.captureMessages ?? true;
     this.flushTimeoutMs = options.flushTimeoutMs ?? 2000;

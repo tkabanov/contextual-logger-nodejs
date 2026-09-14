@@ -33,6 +33,7 @@ export class OpLoggerService implements LoggerService {
    */
   seed(traceId: string, options: { userId?: string } = {}): void {
     const store = this.ctx.create(traceId, options.userId);
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- seed() is the deprecated wrapper itself
     this.ctx.enter(store);
   }
 
