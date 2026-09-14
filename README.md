@@ -105,40 +105,23 @@ For a deeper dive, keep reading the NestJS Adapter section below.
 
 ### Sample Log Output
 
-The quick-start setup above emits structured JSON per lifecycle event. A single request produces logs similar to:
+Every event is one JSON line. The output below was produced by the built package for a `POST /orders` request handled by `HttpContextMiddleware` + `HttpContextInterceptor`, with a service that calls `start`, `point` and `finish` for `orders.create`:
 
 ```json
-{
-  "time": "2025-05-18T12:00:01.234Z",
-  "level": "info",
-  "event": "http.request.start",
-  "traceId": "8b7e6f5c-7b0f-4f5d-9d78-0c1c986b7ce6",
-  "opId": "root",
-  "userId": "customer-42",
-  "http": { "method": "POST", "url": "/orders" }
-}
-{
-  "time": "2025-05-18T12:00:01.310Z",
-  "level": "info",
-  "event": "orders.create.finish",
-  "traceId": "8b7e6f5c-7b0f-4f5d-9d78-0c1c986b7ce6",
-  "opId": "orders.create",
-  "durMs": 76,
-  "msg": "Operation finished",
-  "fields": { "status": "ok" }
-}
-{
-  "time": "2025-05-18T12:00:01.312Z",
-  "level": "info",
-  "event": "http.request.finish",
-  "traceId": "8b7e6f5c-7b0f-4f5d-9d78-0c1c986b7ce6",
-  "opId": "root",
-  "durMs": 78,
-  "http": { "status": 201 }
-}
+{"level":"info","time":"2026-09-14T16:47:11.785Z","traceId":"8b7e6f5c-7b0f-4f5d-9d78-0c1c986b7ce6","opId":"1ffc0cc8-d5de-4084-88c5-940ca98aee09","kind":"start","event":"http.request","module":"Http","user":{"id":"customer-42"},"http":{"method":"POST","url":"/orders"},"msg":"POST /orders"}
+{"level":"info","time":"2026-09-14T16:47:11.786Z","traceId":"8b7e6f5c-7b0f-4f5d-9d78-0c1c986b7ce6","opId":"9d2c9a32-2397-4c53-9591-6a98f8e862f4","parentOpId":"1ffc0cc8-d5de-4084-88c5-940ca98aee09","kind":"start","event":"orders.create","module":"OrdersService","user":{"id":"customer-42"}}
+{"level":"info","time":"2026-09-14T16:47:11.827Z","traceId":"8b7e6f5c-7b0f-4f5d-9d78-0c1c986b7ce6","opId":"9d2c9a32-2397-4c53-9591-6a98f8e862f4","parentOpId":"1ffc0cc8-d5de-4084-88c5-940ca98aee09","kind":"point","event":"orders.create","module":"OrdersService","user":{"id":"customer-42"},"extra":{"orphanOp":false,"amount":1290},"msg":"Payment authorised"}
+{"level":"info","time":"2026-09-14T16:47:11.827Z","traceId":"8b7e6f5c-7b0f-4f5d-9d78-0c1c986b7ce6","opId":"9d2c9a32-2397-4c53-9591-6a98f8e862f4","parentOpId":"1ffc0cc8-d5de-4084-88c5-940ca98aee09","kind":"finish","event":"orders.create","durMs":41,"module":"OrdersService","user":{"id":"customer-42"},"extra":{"orphanOp":false,"status":"ok"}}
+{"level":"info","time":"2026-09-14T16:47:11.827Z","traceId":"8b7e6f5c-7b0f-4f5d-9d78-0c1c986b7ce6","opId":"1ffc0cc8-d5de-4084-88c5-940ca98aee09","kind":"finish","event":"http.request","durMs":42,"user":{"id":"customer-42"},"http":{"status":201},"extra":{"orphanOp":false}}
 ```
 
-Each entry preserves the same `traceId`, making it easy to correlate operation spans, request lifecycle, and user attribution across transports.
+How to read it:
+
+- `traceId` is shared by every line of the request; it came from the inbound `x-trace-id` header.
+- `event` names the operation, `kind` tells which phase it is: `start`, `point`, `finish` or `error`.
+- `opId` identifies one operation; `parentOpId` links `orders.create` to the enclosing `http.request`, giving you a span tree.
+- `durMs` is computed on `finish` from the matching `start`.
+- `extra.orphanOp` is `false` while an operation is open; a `point` or `finish` without a matching `start` gets `true`.
 
 ## Runtime Requirements
 
@@ -314,11 +297,11 @@ class PaymentService {
 
 The decorator will emit start/finish/error records while preserving the enclosing trace.
 
-Behind the scenes `@OpLogged` issues:
+Behind the scenes `@OpLogged` emits three kinds of records, all with `event: 'payments.charge'`:
 
-- a `*.start` event when the method begins, capturing input metadata you provide
-- a `*.finish` event with automatically calculated `durMs` on success
-- a `*.error` event that normalises thrown exceptions and keeps the trace open for upstream handlers
+- `kind: 'start'` when the method begins, carrying `module` and whatever `extra(args)` returns
+- `kind: 'finish'` with automatically calculated `durMs` on success, plus `onSuccess(result)` fields
+- `kind: 'error'` on failure with the normalised exception, plus `onError(err)` fields; the exception is rethrown unchanged
 
 The decorator reads its dependencies from the decorated instance: by default `this.log` (an `OpLoggerService`) and `this.opCtx` (an `OpContextService`, only needed for `userId`/`userParamIndex`). If your service names them differently, point the decorator at them:
 
@@ -496,7 +479,10 @@ Common scripts:
 
 - `npm run build` – compile TypeScript to `dist/`.
 - `npm run test` – run the Jest suite.
-- `npm run lint` / `npm run format` – quality gates.
+- `npm run lint` / `npm run format` – quality gates (`src`, `test` and `examples`).
+- `npm run typecheck` – type-checks the library, the tests and the examples.
+
+A husky pre-commit hook runs `lint-staged` (ESLint + Prettier on staged files). Hooks are installed by `npm install` via the `prepare` script; set `HUSKY=0` to skip them, e.g. in CI or Docker.
 
 ### Transport Lifecycle Guidance
 
@@ -559,7 +545,8 @@ steps:
       node-version: 20
       registry-url: https://registry.npmjs.org
   - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
-  - run: npm ci # `prepare` builds dist/
+  - run: npm ci
+  - run: npm run build
   - run: npx semantic-release
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

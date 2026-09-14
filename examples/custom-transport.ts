@@ -5,7 +5,7 @@ class MemoryTransport implements LoggerTransport {
   readonly name = 'memory';
   readonly events: LogEvent[] = [];
 
-  async log(event: LogEvent): Promise<void> {
+  log(event: LogEvent): void {
     this.events.push(event);
   }
 }

@@ -1,4 +1,6 @@
 import type { CallHandler, ExecutionContext } from '@nestjs/common';
+import { lastValueFrom, of, throwError } from 'rxjs';
+
 import {
   ConsoleTransport,
   CoreLoggerService,
@@ -7,7 +9,6 @@ import {
   OpLoggerService,
   SanitizeProcessor,
 } from '../src';
-import { lastValueFrom, of, throwError } from 'rxjs';
 
 type Request = {
   method: string;
@@ -27,6 +28,7 @@ function createExecutionContext(req: Request, res: Response): ExecutionContext {
     switchToHttp: () => ({
       getRequest: () => req,
       getResponse: () => res,
+      getNext: () => undefined as never,
     }),
     getClass: () => Object,
     getHandler: () => () => undefined,
