@@ -498,27 +498,26 @@ Alternatively, use `OpContextService.run(traceId, () => { ... })` to execute a f
 ### CI & Semantic Release
 
 - Adopt Conventional Commits (`feat:`, `fix:`, `chore:`) so `semantic-release` can infer version bumps.
-- Configure a CI job that runs on `main` after tests succeed:
+- The release workflow (`.github/workflows/release.yml`) is triggered by `workflow_run` once the CI workflow succeeds on `main`, so a red CI never publishes. Its essential steps:
 
 ```yaml
 steps:
   - uses: actions/checkout@v4
     with:
-      fetch-depth: 0
+      fetch-depth: 0 # semantic-release needs the previous tag
   - uses: actions/setup-node@v4
     with:
       node-version: 20
       registry-url: https://registry.npmjs.org
-  - run: npm ci
-  - run: npm test
-  - run: npm run build
+  - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
+  - run: npm ci # `prepare` builds dist/
   - run: npx semantic-release
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       NPM_CONFIG_PROVENANCE: true
 ```
 
-- Ensure the workflow declares `permissions: { id-token: write }` so npm can issue a trusted publishing token.
+- Ensure the workflow declares `permissions: { id-token: write }` so npm can issue a trusted publishing token, and register the repository/workflow as a trusted publisher in the npm package settings. The package must exist on npm first: publish the initial version manually with `npm publish --access public`.
 - Use `npm run release -- --dry-run` locally to verify configuration before enabling CI publishes.
 
 ## Security & Privacy Notes
