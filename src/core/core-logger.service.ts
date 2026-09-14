@@ -32,10 +32,21 @@ export class CoreLoggerService {
     private readonly onTransportError?: LoggerTransportErrorHandler,
   ) {}
 
+  /**
+   * One promise chain per transport. Events reach a given transport strictly in
+   * emit order, while a slow transport never delays the others.
+   */
+  private readonly queues = new Map<LoggerTransport, Promise<void>>();
+
   emit(event: LogEvent, consoleMsg?: string): void {
     let next = event;
     for (const p of this.processors) next = p.handle(next);
-    void this.fanOut({ ...next, msg: next.msg ?? consoleMsg });
+    this.fanOut({ ...next, msg: next.msg ?? consoleMsg });
+  }
+
+  /** Resolves once every event emitted so far has been handed to every transport. */
+  async drain(): Promise<void> {
+    await Promise.all(this.queues.values());
   }
 
   /**
@@ -91,6 +102,7 @@ export class CoreLoggerService {
    * not prevent the remaining transports from being flushed and disposed.
    */
   async close(): Promise<void> {
+    await this.drain();
     for (const t of this.transports) {
       if (!t) continue;
       try {
@@ -106,22 +118,29 @@ export class CoreLoggerService {
     }
   }
 
-  private async fanOut(event: LogEvent): Promise<void> {
+  private fanOut(event: LogEvent): void {
     for (const t of this.transports) {
-      try {
-        if (!t) continue;
-        if (t.minLevel && !levelGte(event.level, t.minLevel)) continue;
+      if (!t) continue;
+      if (t.minLevel && !levelGte(event.level, t.minLevel)) continue;
 
-        // Pick per-level handler if present, otherwise fallback to .log()
-        const invoke: (e: LogEvent) => void | Promise<void> =
-          t.logByLevel && t.logByLevel[event.level]
-            ? (e: LogEvent) => t.logByLevel![event.level]!(e)
-            : (e: LogEvent) => t.log(e);
+      const previous = this.queues.get(t) ?? Promise.resolve();
+      const next = previous.then(() => this.deliver(t, event));
+      this.queues.set(t, next);
+      // Drop the reference once the chain is idle so it cannot grow unbounded.
+      void next.then(() => {
+        if (this.queues.get(t) === next) this.queues.delete(t);
+      });
+    }
+  }
 
-        await invoke(event);
-      } catch (e) {
-        this.reportTransportError(t, e);
-      }
+  /** Never rejects: failures are reported, and the transport's queue keeps moving. */
+  private async deliver(t: LoggerTransport, event: LogEvent): Promise<void> {
+    try {
+      // Pick per-level handler if present, otherwise fallback to .log()
+      const byLevel = t.logByLevel?.[event.level];
+      await (byLevel ? byLevel(event) : t.log(event));
+    } catch (e) {
+      this.reportTransportError(t, e);
     }
   }
 

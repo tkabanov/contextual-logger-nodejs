@@ -147,6 +147,81 @@ describe('CoreLoggerService', () => {
     expect(transport.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it('delivers events to each transport in emit order even when the transport is async and jittery', async () => {
+    const seen: string[] = [];
+    const jittery: LoggerTransport = {
+      name: 'jittery',
+      log: async (e) => {
+        await new Promise((resolve) => setTimeout(resolve, e.msg === 'first' ? 15 : 1));
+        seen.push(e.msg ?? '');
+      },
+    };
+    const logger = new CoreLoggerService([jittery]);
+
+    logger.emit(createEvent({ msg: 'first' }));
+    logger.emit(createEvent({ msg: 'second' }));
+    logger.emit(createEvent({ msg: 'third' }));
+    await logger.drain();
+
+    expect(seen).toEqual(['first', 'second', 'third']);
+  });
+
+  it('does not let a slow transport delay a fast one', async () => {
+    const order: string[] = [];
+    const slow: LoggerTransport = {
+      name: 'slow',
+      log: () => new Promise((resolve) => setTimeout(() => (order.push('slow'), resolve()), 30)),
+    };
+    const fast: LoggerTransport = { name: 'fast', log: () => void order.push('fast') };
+    const logger = new CoreLoggerService([slow, fast]);
+
+    logger.emit(createEvent({ msg: 'x' }));
+    await waitForDispatch();
+
+    expect(order).toEqual(['fast']);
+    await logger.drain();
+    expect(order).toEqual(['fast', 'slow']);
+  });
+
+  it('keeps the queue moving after a transport failure', async () => {
+    const seen: string[] = [];
+    let calls = 0;
+    const flaky: LoggerTransport = {
+      name: 'flaky',
+      log: (e) => {
+        if (++calls === 1) throw new Error('first call fails');
+        seen.push(e.msg ?? '');
+      },
+    };
+    const onError = jest.fn();
+    const logger = new CoreLoggerService([flaky], [], onError);
+
+    logger.emit(createEvent({ msg: 'a' }));
+    logger.emit(createEvent({ msg: 'b' }));
+    await logger.drain();
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(seen).toEqual(['b']);
+  });
+
+  it('close() waits for in-flight events before flushing', async () => {
+    const seen: string[] = [];
+    const transport: LoggerTransport = {
+      name: 'ordered',
+      log: () => new Promise((resolve) => setTimeout(() => (seen.push('log'), resolve()), 10)),
+      flush: () => {
+        seen.push('flush');
+        return Promise.resolve();
+      },
+    };
+    const logger = new CoreLoggerService([transport]);
+
+    logger.emit(createEvent({ msg: 'late' }));
+    await logger.close();
+
+    expect(seen).toEqual(['log', 'flush']);
+  });
+
   it('keeps flushing the remaining transports when one fails on close', async () => {
     const faulty: LoggerTransport = {
       name: 'faulty',

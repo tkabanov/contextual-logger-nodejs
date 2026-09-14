@@ -61,6 +61,7 @@ export class LogtailTransport implements LoggerTransport {
       http: event.http,
       db: event.db,
       user: event.user,
+      service: event.service,
       extra: event.extra,
       err: event.err,
       event: event.event,

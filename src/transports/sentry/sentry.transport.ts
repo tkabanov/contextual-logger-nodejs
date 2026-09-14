@@ -97,6 +97,9 @@ function buildContext(event: LogEvent): SentryCaptureContext {
   if (event.module) tags.module = event.module;
   if (event.code) tags.code = event.code;
   if (event.kind) tags.kind = event.kind;
+  if (event.service?.name) tags.service = event.service.name;
+  if (event.service?.version) tags.version = event.service.version;
+  if (event.service?.env) tags.env = event.service.env;
 
   const extra: Record<string, unknown> = { time: event.time };
   if (event.msg) extra.msg = event.msg;

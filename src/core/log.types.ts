@@ -24,6 +24,8 @@ export interface LogEvent {
   http?: { method?: string; url?: string; status?: number };
   db?: { model?: string; op?: string; rows?: number };
   user?: { id?: string };
+  /** Static facts about the emitting process; see `ServiceInfoProcessor`. */
+  service?: { name?: string; version?: string; env?: string; hostname?: string; pid?: number };
   err?: {
     name?: string;
     message?: string;

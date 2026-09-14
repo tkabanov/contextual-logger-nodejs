@@ -408,6 +408,7 @@ Low-level engine that fans out `LogEvent` objects to transports. Useful when you
 - `ConsoleTransport` – configurable stream & minimum level (defaults to warn → `stderr`). Calls `flush()` and `dispose()` even though they are no-ops by default so you can extend the transport safely.
 - `LogtailTransport` (`@contextual-logger/nodejs/transports/logtail`) – forwards events to Logtail; `{ sourceToken, endpoint, minLevel?, name? }`, needs `@logtail/node`.
 - `SentryTransport` (`@contextual-logger/nodejs/transports/sentry`) – forwards `error`+ events to Sentry; needs `@sentry/node`, see below.
+- `ServiceInfoProcessor` – stamps `service: { name, version, env, hostname, pid }` on every event. `env` defaults to `NODE_ENV`, `hostname` to `os.hostname()`, `pid` to `process.pid`; each can be overridden or disabled: `new ServiceInfoProcessor({ name: 'orders-api', version: pkg.version, hostname: false })`. Logtail receives it as `service`, Sentry as the `service`, `version` and `env` tags.
 - `SanitizeProcessor` – deep-clones events, redacts values under sensitive keys (`password`, `token`, `authorization`, `apiKey`, `cookie`, `ssn`, `creditCard`, ... see `DEFAULT_SENSITIVE_KEYS`; matching ignores case and separators) and sensitive substrings inside strings (`Bearer <token>`, JWTs). `Error` values keep name, message, stack, cause and own fields; `Map` becomes an object (keys redacted too), `Set` an array, buffers a `[Buffer N bytes]` placeholder.
 
   ```ts
@@ -502,14 +503,16 @@ A husky pre-commit hook runs `lint-staged` (ESLint + Prettier on staged files). 
 
 ### Transport Lifecycle Guidance
 
-Transports may buffer or batch events. `CoreLoggerService.close()` (called by the NestJS module on application shutdown) invokes two lifecycle hooks:
+`CoreLoggerService` keeps one delivery queue per transport: a transport receives events strictly in emit order, and a slow transport never delays the others. A failing delivery is reported and the queue keeps moving. `await logger.drain()` resolves once everything emitted so far has been handed to every transport.
+
+Transports may buffer or batch events. `CoreLoggerService.close()` (called by the NestJS module on application shutdown) first drains the queues, then invokes two lifecycle hooks:
 
 - `flush()` should resolve once all queued events are sent (e.g. drain buffers or finish retries).
 - `dispose()` should release external resources (close connections, stop timers, tear down workers).
 
 A transport that throws from either hook is reported through `onTransportError` (or stderr) and does not stop the remaining transports from being flushed and disposed.
 
-`ConsoleTransport` provides empty implementations; override them when building heavy transports. Outside NestJS, call `CoreLoggerService.close()` yourself on shutdown.
+`ConsoleTransport` writes without blocking the caller, but honours the stream's backpressure on shutdown: if the stream reported it was saturated, `flush()` waits for `drain` (up to `drainTimeoutMs`, default 1000 ms) so buffered lines reach a slow pipe before the process exits. Outside NestJS, call `CoreLoggerService.close()` yourself on shutdown.
 
 Use the `onTransportError` hook (or implement your own inside a transport) to emit metrics, trigger retries, or surface alerts when a sink fails. A simple pattern is to enqueue the event for later retry inside the hook and log a warning via another transport.
 
