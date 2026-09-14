@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 
-import { type CallHandler, type ExecutionContext, Injectable, type NestInterceptor } from '@nestjs/common';
+import {
+  type CallHandler,
+  type ExecutionContext,
+  HttpException,
+  Injectable,
+  type NestInterceptor,
+} from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { catchError, finalize } from 'rxjs/operators';
 
@@ -58,7 +64,7 @@ export class HttpContextInterceptor implements NestInterceptor {
           .pipe(
             catchError((err: unknown) => {
               ok = false;
-              this.log.error('http.request', err, { http: { status: res.statusCode } });
+              this.log.error('http.request', err, { http: { status: resolveErrorStatus(err, res) } });
               throw err;
             }),
             finalize(() => {
@@ -69,4 +75,15 @@ export class HttpContextInterceptor implements NestInterceptor {
       }),
     );
   }
+}
+
+/**
+ * At catchError time exception filters have not run yet, so `res.statusCode` is
+ * still the default 200. Prefer a status a filter or handler already set, then the
+ * HttpException's own status, otherwise assume an unhandled 500.
+ */
+function resolveErrorStatus(err: unknown, res: ResponseLike): number {
+  if (res.statusCode >= 400) return res.statusCode;
+  if (err instanceof HttpException) return err.getStatus();
+  return 500;
 }

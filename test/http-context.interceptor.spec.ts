@@ -1,4 +1,4 @@
-import type { CallHandler, ExecutionContext } from '@nestjs/common';
+import { type CallHandler, type ExecutionContext, NotFoundException } from '@nestjs/common';
 import { defer, lastValueFrom, throwError } from 'rxjs';
 
 import type { LogEvent } from '../src';
@@ -132,6 +132,63 @@ describe('HttpContextInterceptor', () => {
     expect(transport.events[1]).toEqual(
       expect.objectContaining({ err: expect.objectContaining({ message: 'boom' }), http: { status: 500 } }),
     );
+  });
+
+  it('derives the error status from the HttpException when the response is still 200', async () => {
+    const req = { method: 'GET', url: '/orders/42', headers: {} };
+    const res = { statusCode: 200, setHeader: jest.fn() };
+    const handler: CallHandler = { handle: () => throwError(() => new NotFoundException()) };
+
+    await expect(
+      lastValueFrom(interceptor.intercept(createExecutionContext(req, res), handler)),
+    ).rejects.toThrow();
+    await flush();
+
+    expect(transport.events[1]).toEqual(
+      expect.objectContaining({
+        kind: 'error',
+        http: { status: 404 },
+        err: expect.objectContaining({ status: 404 }),
+      }),
+    );
+  });
+
+  it('assumes 500 for unknown errors and keeps a status a filter already set', async () => {
+    const run = async (statusCode: number) => {
+      const res = { statusCode, setHeader: jest.fn() };
+      const handler: CallHandler = { handle: () => throwError(() => new TypeError('bad')) };
+      await expect(
+        lastValueFrom(
+          interceptor.intercept(
+            createExecutionContext({ method: 'GET', url: '/', headers: {} }, res),
+            handler,
+          ),
+        ),
+      ).rejects.toThrow('bad');
+    };
+    await run(200);
+    await run(503);
+    await flush();
+
+    const statuses = transport.events.filter((e) => e.kind === 'error').map((e) => e.http?.status);
+    expect(statuses).toEqual([500, 503]);
+  });
+
+  it('ignores a malformed x-trace-id header and generates its own', async () => {
+    const req = { method: 'GET', url: '/', headers: { 'x-trace-id': 'bad id\r\nSet-Cookie: x' } };
+    const res = { statusCode: 200, setHeader: jest.fn() };
+
+    await lastValueFrom(
+      interceptor.intercept(
+        createExecutionContext(req, res),
+        createHandler(() => Promise.resolve(1)),
+      ),
+    );
+    await flush();
+
+    const traceId = transport.events[0].traceId;
+    expect(traceId).toHaveLength(36);
+    expect(res.setHeader).toHaveBeenCalledWith('x-trace-id', traceId);
   });
 
   it('isolates concurrent requests from each other', async () => {

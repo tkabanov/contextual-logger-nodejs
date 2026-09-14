@@ -131,6 +131,46 @@ describe('CoreLoggerService', () => {
     expect(transport.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps flushing the remaining transports when one fails on close', async () => {
+    const faulty: LoggerTransport = {
+      name: 'faulty',
+      log: jest.fn(),
+      flush: jest.fn(() => Promise.reject(new Error('flush failed'))),
+      dispose: jest.fn(() => Promise.resolve()),
+    };
+    const healthy = new RecordingTransport();
+    const onError = jest.fn();
+    const logger = new CoreLoggerService([faulty, healthy], [], onError);
+
+    await expect(logger.close()).resolves.toBeUndefined();
+
+    expect(faulty.dispose).toHaveBeenCalledTimes(1);
+    expect(healthy.flush).toHaveBeenCalledTimes(1);
+    expect(healthy.dispose).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(faulty, expect.objectContaining({ message: 'flush failed' }));
+  });
+
+  it('falls back to stderr when the error handler itself throws', async () => {
+    const faulty: LoggerTransport = {
+      name: 'faulty',
+      log: () => {
+        throw new Error('boom');
+      },
+    };
+    const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const logger = new CoreLoggerService([faulty], [], () => {
+      throw new Error('handler exploded');
+    });
+
+    logger.emit(createEvent({ msg: 'trigger' }));
+    await waitForDispatch();
+
+    expect(stderr).toHaveBeenCalledWith(
+      expect.stringContaining('Error in logger transport "faulty": Error: boom'),
+    );
+    stderr.mockRestore();
+  });
+
   it('invokes error handler when transport fails', async () => {
     const faulty: LoggerTransport = {
       name: 'faulty',

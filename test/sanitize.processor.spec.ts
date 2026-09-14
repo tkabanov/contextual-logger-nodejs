@@ -32,6 +32,51 @@ describe('SanitizeProcessor', () => {
     expect(result.extra?.token).toBe('[REDACTED]');
   });
 
+  it('preserves Error details instead of flattening them to {}', () => {
+    const cause = new Error('root cause');
+    const err = Object.assign(new TypeError('outer'), { cause, code: 'E_OUTER', token: 'leak' });
+    const result = processor.handle({ ...event, extra: { err } });
+
+    expect(result.extra?.err).toEqual({
+      name: 'TypeError',
+      message: 'outer',
+      stack: err.stack,
+      cause: { name: 'Error', message: 'root cause', stack: cause.stack },
+      code: 'E_OUTER',
+      token: '[REDACTED]',
+    });
+  });
+
+  it('serialises Map, Set and binary data', () => {
+    const result = processor.handle({
+      ...event,
+      extra: {
+        map: new Map<string, unknown>([
+          ['safe', 1],
+          ['password', 'pw'],
+        ]),
+        set: new Set(['a', { token: 't' }]),
+        buf: Buffer.from('hello'),
+        view: new Uint8Array(3),
+      },
+    });
+
+    expect(result.extra).toEqual({
+      map: { safe: 1, password: '[REDACTED]' },
+      set: ['a', { token: '[REDACTED]' }],
+      buf: '[Buffer 5 bytes]',
+      view: '[Uint8Array 3 bytes]',
+    });
+  });
+
+  it('handles circular references', () => {
+    const circular: Record<string, unknown> = { name: 'loop' };
+    circular.self = circular;
+    const result = processor.handle({ ...event, extra: { circular } });
+    const out = result.extra?.circular as Record<string, unknown>;
+    expect(out.self).toBe(out);
+  });
+
   it('does not mutate original event', () => {
     const snapshot = JSON.parse(JSON.stringify(event));
     processor.handle(event);

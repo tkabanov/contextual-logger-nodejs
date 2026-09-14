@@ -5,8 +5,12 @@ export type OperationContext = {
   traceId: string;
   opStack: string[];
   opTimes: Map<string, number>;
+  /** Event name each op was started with, used to detect unbalanced start/finish pairs. */
+  opEvents: Map<string, string>;
   user?: { id?: string };
 };
+
+export type EndedOperation = { opId?: string; startedAt?: number; event?: string };
 
 /**
  * Framework-agnostic AsyncLocalStorage helper for trace and operation nesting.
@@ -16,7 +20,13 @@ export class OpContext {
 
   /** Create a fresh store object. */
   create(traceId: string, userId?: string): OperationContext {
-    return { traceId, opStack: [], opTimes: new Map(), user: userId ? { id: userId } : undefined };
+    return {
+      traceId,
+      opStack: [],
+      opTimes: new Map(),
+      opEvents: new Map(),
+      user: userId ? { id: userId } : undefined,
+    };
   }
 
   /**
@@ -54,21 +64,25 @@ export class OpContext {
     if (s) s.user = { id };
   }
 
-  beginOp(opId: string = randomUUID()): string {
+  beginOp(opId: string = randomUUID(), event?: string): string {
     const s = this.get();
     if (!s) return opId;
     s.opStack.push(opId);
     s.opTimes.set(opId, Date.now());
+    if (event) s.opEvents?.set(opId, event);
     return opId;
   }
 
-  endOp(): { opId?: string; startedAt?: number } {
+  endOp(): EndedOperation {
     const s = this.get();
     if (!s) return {};
     const opId = s.opStack.pop();
-    const startedAt = opId ? s.opTimes.get(opId) : undefined;
-    if (opId) s.opTimes.delete(opId);
-    return { opId, startedAt };
+    if (!opId) return {};
+    const startedAt = s.opTimes.get(opId);
+    const event = s.opEvents?.get(opId);
+    s.opTimes.delete(opId);
+    s.opEvents?.delete(opId);
+    return { opId, startedAt, event };
   }
 
   currentOp(): string | undefined {

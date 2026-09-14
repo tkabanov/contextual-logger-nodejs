@@ -30,6 +30,16 @@ describe('HttpContextMiddleware', () => {
     expect(ctx.get()).toBeUndefined(); // no leak outside the request
   });
 
+  it('replaces an over-long inbound trace id with a generated one', () => {
+    const res = { setHeader: jest.fn() };
+    let seen: string | undefined;
+    middleware.use({ headers: { 'x-trace-id': 'a'.repeat(129) } }, res, () => {
+      seen = ctx.traceId();
+    });
+    expect(seen).toHaveLength(36);
+    expect(res.setHeader).toHaveBeenCalledWith('x-trace-id', seen);
+  });
+
   it('generates a trace id when none is provided and keeps requests isolated', async () => {
     const seen: string[] = [];
     const request = (delay: number) =>

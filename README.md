@@ -289,7 +289,9 @@ export class AppModule implements NestModule {
 }
 ```
 
-Both pieces scope the store with `AsyncLocalStorage.run`, so a request's context can never leak into another request. The inbound trace id is taken from `x-trace-id` or a W3C `traceparent` header, and echoed back in the `x-trace-id` response header.
+Both pieces scope the store with `AsyncLocalStorage.run`, so a request's context can never leak into another request. The inbound trace id is taken from `x-trace-id` or a W3C `traceparent` header, and echoed back in the `x-trace-id` response header. Inbound ids are validated first (at most 128 characters of `A-Z a-z 0-9 . _ : -`); anything else is ignored and a fresh id is generated, so clients cannot inject arbitrary text into logs or response headers.
+
+The `http.request` error event carries the status a filter or handler already set on the response, otherwise the `HttpException` status, otherwise 500.
 
 ### Method-Level Decorator
 
@@ -351,9 +353,9 @@ Use the framework-agnostic `OpContext` class from `@contextual-logger/nodejs/cor
 ### `OpLoggerService`
 
 - `start(event, fields)` – begin an operation and push a new `opId` onto the context stack.
-- `finish(event, fields)` – mark completion, automatically computing `durMs`.
+- `finish(event, fields)` – mark completion, automatically computing `durMs`. Operations close LIFO; finishing an event other than the innermost open one still closes the innermost op but stamps `extra.opMismatch` with the event that was actually closed, so unbalanced pairs show up in the logs.
 - `point(level, event, fields)` – emit standalone measurement/annotation.
-- `error(event, err, fields)` – normalise errors, capture stacks and orphan operations.
+- `error(event, err, fields)` – normalise errors, capture stacks and orphan operations. Any NestJS `HttpException` (400, 403, 404, ...) is captured with `err.status` and `err.response`.
 - Legacy helpers (`log`, `warn`, `debug`, `verbose`, `fatal`) remain for compatibility. `error` accepts both the structured form `error(event, err, fields?)` and Nest's `error(message, stack?, context?)`: a call is treated as structured when the second argument is not a string.
 - `seed(traceId, { userId })` — bind a trace to the current async execution (uses `enterWith`). Call it at the start of an isolated task such as a job or message handler, never from a shared context like application bootstrap, otherwise the store sticks to every later async task. Prefer `OpContextService.run`.
 - `setUser(userId)` — update the bound user id for the current trace.
@@ -372,7 +374,7 @@ Low-level engine that fans out `LogEvent` objects to transports. Useful when you
 - `ConsoleTransport` – configurable stream & minimum level (defaults to warn → `stderr`). Calls `flush()` and `dispose()` even though they are no-ops by default so you can extend the transport safely.
 - `LogtailTransport` (`@contextual-logger/nodejs/transports/logtail`) – forwards events to Logtail; token and host required, needs `@logtail/node`.
 - `SentryTransport` (`@contextual-logger/nodejs/transports/sentry`) – forwards `error`+ events to Sentry; needs `@sentry/node`, see below.
-- `SanitizeProcessor` – deep-clones events and redacts known sensitive keys (`password`, `token`, etc.).
+- `SanitizeProcessor` – deep-clones events and redacts known sensitive keys (`password`, `token`, etc.). `Error` values keep name, message, stack, cause and own fields; `Map` becomes an object (keys redacted too), `Set` an array, buffers a `[Buffer N bytes]` placeholder.
 
 ### Optional Transports
 
@@ -457,6 +459,8 @@ Transports may buffer or batch events. `CoreLoggerService.close()` (called by th
 
 - `flush()` should resolve once all queued events are sent (e.g. drain buffers or finish retries).
 - `dispose()` should release external resources (close connections, stop timers, tear down workers).
+
+A transport that throws from either hook is reported through `onTransportError` (or stderr) and does not stop the remaining transports from being flushed and disposed.
 
 `ConsoleTransport` provides empty implementations; override them when building heavy transports. Outside NestJS, call `CoreLoggerService.close()` yourself on shutdown.
 

@@ -69,11 +69,24 @@ export class CoreLoggerService {
     return { emit, log, debug, info, warn, error, fatal };
   }
 
-  /** Flush and dispose every transport. Call on graceful shutdown. */
+  /**
+   * Flush and dispose every transport. Call on graceful shutdown.
+   * A failing transport is reported via `onTransportError` (or stderr) and does
+   * not prevent the remaining transports from being flushed and disposed.
+   */
   async close(): Promise<void> {
     for (const t of this.transports) {
-      if (t.flush) await t.flush();
-      if (t.dispose) await t.dispose();
+      if (!t) continue;
+      try {
+        if (t.flush) await t.flush();
+      } catch (e) {
+        this.reportTransportError(t, e);
+      }
+      try {
+        if (t.dispose) await t.dispose();
+      } catch (e) {
+        this.reportTransportError(t, e);
+      }
     }
   }
 
@@ -91,13 +104,21 @@ export class CoreLoggerService {
 
         await invoke(event);
       } catch (e) {
-        if (this.onTransportError) {
-          this.onTransportError(t, e);
-        } else {
-          const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-          process.stderr.write(`Error in logger transport "${t?.name}": ${msg}\n`);
-        }
+        this.reportTransportError(t, e);
       }
     }
+  }
+
+  private reportTransportError(t: LoggerTransport, e: unknown): void {
+    if (this.onTransportError) {
+      try {
+        this.onTransportError(t, e);
+        return;
+      } catch {
+        // A throwing error handler must never take the logger down; fall through to stderr.
+      }
+    }
+    const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    process.stderr.write(`Error in logger transport "${t?.name}": ${msg}\n`);
   }
 }

@@ -15,6 +15,15 @@ export interface LogEvent {
   http?: { method?: string; url?: string; status?: number };
   db?: { model?: string; op?: string; rows?: number };
   user?: { id?: string };
-  err?: { name?: string; message?: string; stack?: string; cause?: string };
+  err?: {
+    name?: string;
+    message?: string;
+    stack?: string;
+    cause?: string;
+    /** HTTP status for framework HTTP exceptions. */
+    status?: number;
+    /** Framework-specific error body (e.g. NestJS `HttpException.getResponse()`). */
+    response?: unknown;
+  };
   extra?: Record<string, unknown>;
 }

@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 
 import type { LogEvent } from '../src';
 import { CoreLoggerService, OpContextService, OpLoggerService } from '../src';
@@ -70,6 +70,39 @@ describe('OpLoggerService', () => {
       expect(finishEvent?.durMs).toEqual(expect.any(Number));
       expect((finishEvent?.durMs ?? 0) >= 0).toBe(true);
       expect(context.currentOp()).toBeUndefined();
+    });
+  });
+
+  it('reports the same parentOpId on start and finish of a nested operation', async () => {
+    await runWithContext(async () => {
+      service.start('outer');
+      service.start('middle');
+      service.start('inner');
+      service.finish('inner');
+      await waitForDispatch();
+
+      const start = transport.events.find((e) => e.kind === 'start' && e.event === 'inner');
+      const finish = transport.events.find((e) => e.kind === 'finish' && e.event === 'inner');
+      const middle = transport.events.find((e) => e.kind === 'start' && e.event === 'middle');
+      expect(start?.parentOpId).toBe(middle?.opId);
+      expect(finish?.parentOpId).toBe(middle?.opId);
+      expect(finish?.opId).toBe(start?.opId);
+      expect(finish?.extra?.opMismatch).toBeUndefined();
+    });
+  });
+
+  it('flags unbalanced start/finish pairs instead of silently closing the wrong op', async () => {
+    await runWithContext(async () => {
+      service.start('a');
+      service.start('b');
+      service.finish('a'); // closes b (LIFO) but says so
+      await waitForDispatch();
+
+      const finish = transport.events.find((e) => e.kind === 'finish');
+      const b = transport.events.find((e) => e.kind === 'start' && e.event === 'b');
+      expect(finish?.opId).toBe(b?.opId);
+      expect(finish?.extra?.opMismatch).toBe('b');
+      expect(context.currentOp()).toBeDefined(); // 'a' is still open
     });
   });
 
@@ -186,8 +219,28 @@ describe('OpLoggerService', () => {
       expect(errorEvent?.err).toEqual({
         name: badReq.name,
         message: badReq.message,
+        stack: badReq.stack,
+        status: 400,
         response: badReq.getResponse(),
       });
+    });
+  });
+
+  it('normalises every HttpException subclass with status and response', async () => {
+    await runWithContext(async () => {
+      const notFound = new NotFoundException('order 42 not found');
+      service.error('orders.get', notFound);
+      await waitForDispatch();
+
+      const errorEvent = transport.events.find((e) => e.kind === 'error');
+      expect(errorEvent?.err).toEqual(
+        expect.objectContaining({
+          name: 'NotFoundException',
+          status: 404,
+          response: expect.objectContaining({ statusCode: 404, message: 'order 42 not found' }),
+        }),
+      );
+      expect(errorEvent?.msg).toBe('order 42 not found');
     });
   });
 

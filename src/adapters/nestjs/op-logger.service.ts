@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { BadRequestException, Injectable, LoggerService } from '@nestjs/common';
+import { HttpException, Injectable, type LoggerService } from '@nestjs/common';
 
 import { CoreLoggerService } from '../../core/core-logger.service';
 import { LogEvent } from '../../core/log.types';
@@ -29,7 +29,7 @@ export class OpLoggerService implements LoggerService {
 
   start(event: string, fields: Partial<LogEvent> = {}): void {
     const traceId = this.ensureTraceId();
-    const opId = this.ctx.beginOp();
+    const opId = this.ctx.beginOp(undefined, event);
     const context = this.ctx.get();
     const ev: LogEvent = {
       level: 'info',
@@ -51,22 +51,30 @@ export class OpLoggerService implements LoggerService {
 
   finish(event: string, fields: Partial<LogEvent> = {}): void {
     const traceId = this.ensureTraceId();
-    const { opId, startedAt } = this.ctx.endOp();
+    // Read the parent while the finishing op is still on the stack: after endOp()
+    // parentOp() would point at the grandparent.
+    const parentOpId = this.ctx.parentOp();
+    const ended = this.ctx.endOp();
     const context = this.ctx.get();
+
+    // Ops close LIFO. If the caller finishes an event other than the innermost
+    // open one, flag it so unbalanced start/finish pairs are visible in the logs.
+    const mismatch = ended.event !== undefined && ended.event !== event ? { opMismatch: ended.event } : {};
+
     const ev: LogEvent = {
       level: 'info',
       time: now(),
       traceId,
-      opId,
-      parentOpId: this.ctx.parentOp(),
+      opId: ended.opId,
+      parentOpId,
       kind: 'finish',
       event,
-      durMs: startedAt ? Date.now() - startedAt : undefined,
+      durMs: ended.startedAt ? Date.now() - ended.startedAt : undefined,
       module: fields.module,
       user: context?.user,
       http: fields.http,
       db: fields.db,
-      extra: { orphanOp: !opId, ...(fields.extra ?? {}) },
+      extra: { orphanOp: !ended.opId, ...mismatch, ...(fields.extra ?? {}) },
       msg: fields.msg,
     };
     this.core.emit(ev, ev.msg);
@@ -213,9 +221,17 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function normalizeError(err: unknown) {
-  if (err instanceof BadRequestException)
-    return { name: err.name, message: err.message, response: err.getResponse() };
+function normalizeError(err: unknown): NonNullable<LogEvent['err']> {
+  // Any Nest HTTP exception (400, 403, 404, ...), not only BadRequestException.
+  if (err instanceof HttpException) {
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack,
+      status: err.getStatus(),
+      response: err.getResponse(),
+    };
+  }
   if (err instanceof Error) return { name: err.name, message: err.message, stack: err.stack };
   if (typeof err === 'string') return { name: 'Error', message: err };
   try {
@@ -226,7 +242,6 @@ function normalizeError(err: unknown) {
 }
 
 function getErrorMessage(err: unknown): string {
-  if (err instanceof BadRequestException) return err.message;
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
   try {
@@ -236,8 +251,8 @@ function getErrorMessage(err: unknown): string {
   }
 }
 
-function isErrorLike(v: unknown): v is Error | BadRequestException {
-  return v instanceof Error || v instanceof BadRequestException;
+function isErrorLike(v: unknown): v is Error {
+  return v instanceof Error;
 }
 
 /**

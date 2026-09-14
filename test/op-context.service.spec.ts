@@ -34,6 +34,16 @@ describe('OpContextService', () => {
     expect(secondEnded).toBe(opA);
   });
 
+  it('remembers the event an op was started with and returns it on endOp', () => {
+    service.enter(service.create('t'));
+    service.beginOp('op-1', 'orders.create');
+    service.beginOp('op-2');
+
+    expect(service.endOp()).toEqual({ opId: 'op-2', startedAt: expect.any(Number), event: undefined });
+    expect(service.endOp()).toEqual({ opId: 'op-1', startedAt: expect.any(Number), event: 'orders.create' });
+    expect(service.endOp()).toEqual({});
+  });
+
   it('records start times for operations', () => {
     service.enter(service.create('t'));
     const now = Date.now();
